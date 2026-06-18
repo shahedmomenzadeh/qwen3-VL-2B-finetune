@@ -1,0 +1,65 @@
+# GRPO Configuration
+# Default hyperparameters for QLoRA + LoRA GRPO training
+
+# Model (use SFT merged model as base)
+model_id: "output/sft_merged"
+bits: 8                          # 8-bit QLoRA
+lora_enable: true
+vision_lora: true
+lora_rank: 32
+lora_alpha: 64
+lora_dropout: 0.05
+num_lora_modules: -1
+lora_namespan_exclude: "['lm_head', 'embed_tokens']"
+
+# Freezing
+freeze_vision_tower: false
+freeze_llm: true
+freeze_merger: false
+
+# Precision
+bf16: true
+fp16: false
+tf32: true
+
+# Attention
+disable_flash_attn2: false
+
+# GRPO specific
+num_generations: 4               # Group size for GRPO
+max_completion_length: 512
+max_prompt_length: 1024
+beta: 0.04                       # KL coefficient
+temperature: 0.9
+top_p: 1.0
+use_liger_loss: true
+liger_grpo_loss_type: "dapo"    # GRPO loss variant: dapo, grpo, bnpo, dr_grpo
+
+# Learning
+learning_rate: 5e-6
+vision_lr: 2e-6
+merger_lr: 1e-5
+weight_decay: 0.1
+warmup_ratio: 0.03
+lr_scheduler_type: "cosine"
+num_train_epochs: 1
+
+# Batch
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+dataloader_num_workers: 4
+
+# Video
+video_min_pixels: 131072
+video_max_pixels: 262144
+fps: 1
+
+# Logging & saving
+logging_steps: 1
+save_strategy: "epoch"
+save_total_limit: 3
+report_to: "tensorboard"
+
+# Misc
+gradient_checkpointing: true
+lazy_preprocess: true

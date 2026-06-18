@@ -1,0 +1,11 @@
+# ────────────────────────────────────────────────────────────
+#  DEPRECATED — managed with uv from pyproject.toml instead
+# ────────────────────────────────────────────────────────────
+#
+#   1. Install uv:   curl -LsSf https://astral.sh/uv/install.sh | sh
+#   2. Create env:   uv venv
+#   3. Activate:     source .venv/bin/activate
+#   4. Install:      uv sync
+#   5. Flash-attn:   uv sync --extra flash-attn   (or: uv pip install flash-attn --no-build-isolation)
+#   6. Verify:       uv run python -c "import torch; print(torch.cuda.is_available())"
+#

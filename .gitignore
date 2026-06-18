@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+
+# Virtual environment
+.venv/
+venv/
+
+# Training outputs
+output/
+
+# IDE
+.vscode/
+.idea/
+
+# Dataset media files (keep structure + README, exclude media)
+dataset/**/*.mp4
+dataset/**/*.jsonl
+
+# OS
+.DS_Store
+Thumbs.db
