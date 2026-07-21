@@ -7,7 +7,11 @@
 # Phase 2 (video SFT): starts from merged Phase 1 checkpoint
 MODEL_NAME=${MODEL_NAME:-"Qwen/Qwen3-VL-2B-Instruct"}
 
-export PYTHONPATH=src:$PYTHONPATH
+export PYTHONPATH=src:${PYTHONPATH:-}
+
+# Enable generation-based eval metrics (exact_match, contains_match, etc.)
+# Set to empty string to disable: SFT_COMPUTE_METRICS="" ./finetune_sft_lora.sh
+export SFT_COMPUTE_METRICS="${SFT_COMPUTE_METRICS:-eval/compute_metrics.py}"
 
 # ---------- Hyperparameters (override via env vars) ----------
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-32}
@@ -15,11 +19,11 @@ BATCH_PER_DEVICE=${BATCH_PER_DEVICE:-2}
 NUM_DEVICES=${NUM_DEVICES:-1}
 GRAD_ACCUM_STEPS=$((GLOBAL_BATCH_SIZE / (BATCH_PER_DEVICE * NUM_DEVICES)))
 
-DATA_PATH=${DATA_PATH:-"data/sft_train.json"}
-EVAL_PATH=${EVAL_PATH:-"data/sft_val.json"}
+DATA_PATH=${DATA_PATH:-"data/sft_train_clip.json"}
+EVAL_PATH=${EVAL_PATH:-"data/sft_val_clip.json"}
 # Image folder is the dataset root (videos referenced as relative paths like "YT_ID/clip.mp4")
 IMAGE_FOLDER=${IMAGE_FOLDER:-"dataset"}
-OUTPUT_DIR=${OUTPUT_DIR:-"output/sft_lora"}
+OUTPUT_DIR=${OUTPUT_DIR:-"output/sft_clip_lora"}
 NUM_EPOCHS=${NUM_EPOCHS:-2}
 LEARNING_RATE=${LEARNING_RATE:-1e-4}
 VISION_LR=${VISION_LR:-2e-6}
@@ -31,10 +35,16 @@ BITS=${BITS:-4}
 
 # Video — set ONLY ONE of FPS or NFRAMES
 # NFRAMES: caps sampled frames to this value (e.g., 60). If video has fewer frames,
-#          all frames are used. For clips (8-15s, ~50-150 frames), NFRAMES=60 captures all.
+#          all frames are used. Clips longer than NFRAMES will be uniformly sampled.
 # FPS: frames per second (alternative to NFRAMES)
 FPS=${FPS:-}
 NFRAMES=${NFRAMES:-60}
+VIDEO_FRAME_ARGS=""
+if [ -n "$FPS" ]; then
+    VIDEO_FRAME_ARGS="--fps $FPS"
+else
+    VIDEO_FRAME_ARGS="--nframes $NFRAMES"
+fi
 
 # Pixel resolution for Qwen3-VL (patch_size=16 → 32×32 tokens per patch)
 VIDEO_MIN_PIXELS=${VIDEO_MIN_PIXELS:-$((128 * 32 * 32))}  # 131072 pixels
@@ -70,7 +80,7 @@ deepspeed src/train/train_sft.py \
     --data_path $DATA_PATH \
     --image_folder $IMAGE_FOLDER \
     --remove_unused_columns False \
-    --freeze_vision_tower False \
+    --freeze_vision_tower True \
     --freeze_llm True \
     --freeze_merger False \
     --bf16 True \
@@ -82,8 +92,7 @@ deepspeed src/train/train_sft.py \
     --gradient_accumulation_steps $GRAD_ACCUM_STEPS \
     --video_min_pixels $VIDEO_MIN_PIXELS \
     --video_max_pixels $VIDEO_MAX_PIXELS \
-    $( [ -n "$FPS" ] && echo "--fps $FPS" ) \
-    $( [ -n "$NFRAMES" ] && echo "--nframes $NFRAMES" ) \
+    $VIDEO_FRAME_ARGS \
     --learning_rate $LEARNING_RATE \
     --merger_lr $MERGER_LR \
     --vision_lr $VISION_LR \

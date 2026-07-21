@@ -28,12 +28,11 @@ disable_flash_attn2: false
 # GRPO specific
 num_generations: 4               # Group size for GRPO
 max_completion_length: 512
-max_prompt_length: 1024
 beta: 0.04                       # KL coefficient
 temperature: 0.9
 top_p: 1.0
-use_liger_loss: true
-liger_grpo_loss_type: "dapo"    # GRPO loss variant: dapo, grpo, bnpo, dr_grpo
+use_liger_kernel: true
+loss_type: "dapo"               # GRPO loss variant: dapo, grpo, bnpo, dr_grpo
 
 # Learning
 learning_rate: 5e-6

@@ -3,19 +3,27 @@
 # After SFT training, merge to get a full model for GRPO base.
 # After GRPO training, merge to get the final model.
 
-export PYTHONPATH=src:$PYTHONPATH
+export PYTHONPATH=src:${PYTHONPATH:-}
 
 # Path to LoRA checkpoint (output from training)
-MODEL_PATH=${MODEL_PATH:-"output/sft_lora"}
+# Phase 1 merge: output/sft_clip_lora
+# Phase 2 merge: output/sft_video_lora
+# Phase 4 merge: output/grpo_video_lora
+MODEL_PATH=${MODEL_PATH:-"output/sft_video_lora"}
 
 # Base model
-# For SFT merge: use the original HuggingFace model
+# For Phase 1 SFT merge: use the original HuggingFace model
 MODEL_BASE=${MODEL_BASE:-"Qwen/Qwen3-VL-2B-Instruct"}
-# For GRPO merge: use the SFT merged model as base:
-# MODEL_BASE="output/sft_merged"
+# For Phase 2 SFT merge: use the Phase 1 merged model
+# MODEL_BASE="output/sft_clip_merged"
+# For GRPO final merge: use the SFT merged model as base
+# MODEL_BASE="output/sft_video_merged"
 
 # Output path
-SAVE_MODEL_PATH=${SAVE_MODEL_PATH:-"output/sft_merged"}
+# Phase 1 merge: output/sft_clip_merged
+# Phase 2 merge: output/sft_video_merged
+# Phase 4 merge: output/grpo_merged
+SAVE_MODEL_PATH=${SAVE_MODEL_PATH:-"output/sft_video_merged"}
 
 # For quantized checkpoints, pass --load-in-8bit or --load-in-4bit
 LOAD_IN_8BIT=${LOAD_IN_8BIT:-""}

@@ -23,11 +23,17 @@ from train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lo
 from constants import IGNORE_INDEX
 
 
-def maybe_zero_3(param, ignore_status=False, name=None):
+_DS_AVAILABLE = False
+try:
     from deepspeed import zero
     from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+    _DS_AVAILABLE = True
+except Exception:
+    pass
 
-    if hasattr(param, "ds_id"):
+
+def maybe_zero_3(param, ignore_status=False, name=None):
+    if _DS_AVAILABLE and hasattr(param, "ds_id"):
         if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
             if not ignore_status:
                 print(name, "no ignore status")

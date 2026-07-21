@@ -185,9 +185,8 @@ class GRPODataset(Dataset):
         if images is not None:
             data_dict["images"] = images
         if videos is not None:
-            # Each batch item must be a list of (tensor, metadata) tuples
-            data_dict["videos"] = [videos]
-            data_dict["video_kwargs"] = [video_kwargs]
+            data_dict["videos"] = videos
+            data_dict["video_kwargs"] = video_kwargs
 
         return data_dict
 

@@ -50,17 +50,27 @@ def set_requires_grad(parameters, requires_grad):
 def configure_vision_tower(model, training_args, compute_dtype, device):
     backbone = get_qwen_vl_generation_backbone(model)
     vision_tower = backbone.visual
-    vision_tower.to(dtype=compute_dtype, device=device)
 
-    vision_model_params = backbone.visual.parameters()
-    set_requires_grad(vision_model_params, not training_args.freeze_vision_tower)
-
-    merger_params = backbone.visual.merger.parameters()
-    set_requires_grad(merger_params, not training_args.freeze_merger)
-
-    if hasattr(backbone.visual, "deepstack_merger_list"):
-        deepstack_merger_list_params = backbone.visual.deepstack_merger_list.parameters()
-        set_requires_grad(deepstack_merger_list_params, not training_args.freeze_merger)
+    # When NOT quantized: cast dtype/device and toggle requires_grad on base weights.
+    # When quantized (bits in [4, 8]): BnB already placed weights on device with the
+    # right compute dtype; base vision/merger weights are packed as Params4bit (uint8)
+    # and CANNOT have requires_grad=True. Forcing them frozen here is safe — LoRA
+    # adapters (added later by get_peft_model) are the trainable components for vision.
+    if training_args.bits not in [4, 8]:
+        vision_tower.to(dtype=compute_dtype, device=device)
+        set_requires_grad(backbone.visual.parameters(), not training_args.freeze_vision_tower)
+        set_requires_grad(backbone.visual.merger.parameters(), not training_args.freeze_merger)
+        if hasattr(backbone.visual, "deepstack_merger_list"):
+            set_requires_grad(
+                backbone.visual.deepstack_merger_list.parameters(),
+                not training_args.freeze_merger,
+            )
+    else:
+        # Quantized: force base vision/merger frozen (Params4bit can't be trained directly).
+        set_requires_grad(backbone.visual.parameters(), False)
+        set_requires_grad(backbone.visual.merger.parameters(), False)
+        if hasattr(backbone.visual, "deepstack_merger_list"):
+            set_requires_grad(backbone.visual.deepstack_merger_list.parameters(), False)
 
 
 def configure_llm(model, training_args):
@@ -103,6 +113,18 @@ def train():
     if not training_args.lora_enable:
         assert not training_args.vision_lora, \
             "Error: training_args.lora_enable is not enabled, but training_args.vision_lora is enabled."
+
+    # Match the reference repo's safety guard: when LoRA is applied to the vision
+    # tower, the base vision weights must be frozen. Otherwise `set_requires_grad`
+    # would attempt to enable gradients on quantized Params4bit tensors (when bits
+    # in [4, 8]), which raises "only Tensors of floating point and complex dtype
+    # can require gradients". LoRA adapters are the trainable vision components.
+    if training_args.vision_lora and not training_args.freeze_vision_tower:
+        raise ValueError(
+            "If `vision_lora` is True, `freeze_vision_tower` must also be True. "
+            "LoRA adapters train on top of the (frozen) vision tower; unfreezing the "
+            "base vision weights conflicts with LoRA and is unsupported under quantization."
+        )
 
     if training_args.lora_namespan_exclude is not None:
         training_args.lora_namespan_exclude = ast.literal_eval(training_args.lora_namespan_exclude)
@@ -172,6 +194,7 @@ def train():
                                                      num_lora_modules=training_args.num_lora_modules),
             lora_dropout=training_args.lora_dropout,
             bias=training_args.lora_bias,
+            use_dora=training_args.use_dora,
         )
         if training_args.bits == 16:
             if training_args.bf16:
@@ -181,12 +204,15 @@ def train():
         rank0_print("Adding LoRA to the model...")
         model = get_peft_model(model, peft_config)
 
-        if not training_args.freeze_vision_tower:
+        # Re-unfreeze non-LoRA vision/merger weights only when NOT quantized.
+        # Under 4/8-bit quantization these are Params4bit and cannot have
+        # requires_grad=True; LoRA adapters already provide the gradient path.
+        if not training_args.freeze_vision_tower and training_args.bits not in [4, 8]:
             for name, param in model.named_parameters():
                 if "visual" in name:
                     param.requires_grad = True
 
-        if not training_args.freeze_merger:
+        if not training_args.freeze_merger and training_args.bits not in [4, 8]:
             for name, param in model.named_parameters():
                 if "merger" in name:
                     param.requires_grad = True

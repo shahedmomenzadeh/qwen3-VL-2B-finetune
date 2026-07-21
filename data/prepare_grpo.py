@@ -3,47 +3,27 @@
 Convert cataract surgery dataset (OpenAI chat format JSONL) to GRPO format JSON.
 
 Usage:
-    python data/prepare_grpo.py \
-        --input-dir ../dataset/Train \
-        --output data/grpo_train.json \
-        --split train
-
-    python data/prepare_grpo.py \
-        --input-dir ../dataset/Validation \
-        --output data/grpo_val.json \
-        --split val
-
-The output JSON contains samples with:
-    {
-        "id": "...",
-        "video": "YT_ID/clip_xx.mp4",
-        "conversations": [
-            {"from": "human", "value": "<video>\\nQuestion..."},
-            {"from": "gpt", "value": "B"}
-        ],
-        "correct_answer": "B",
-        "question_type": "step_identification",
-        "reference_reasoning": "...",
-        "reward_type": "deterministic"
-    }
+    python data/prepare_grpo.py --input-dir dataset/Train --output data/grpo_train_clip.json --split train --data-type clip
+    python data/prepare_grpo.py --input-dir dataset/Train --output data/grpo_train_video.json --split train --data-type full_video
 """
 import argparse
 import json
 import os
 import glob
+from collections import Counter
 
 
-def collect_grpo_jsonl_files(input_dir):
-    """Collect all *grpo.jsonl files from clip directories and full_video files."""
+def collect_grpo_jsonl_files(input_dir, data_type="all"):
+    """Collect GRPO JSONL files from clip and/or full-video files."""
     files = []
 
-    # Find clip_*_grpo.jsonl files
-    clip_pattern = os.path.join(input_dir, "*", "clip_*_grpo.jsonl")
-    files.extend(glob.glob(clip_pattern))
+    if data_type in {"all", "clip"}:
+        clip_pattern = os.path.join(input_dir, "*", "clip_*_grpo.jsonl")
+        files.extend(glob.glob(clip_pattern))
 
-    # Find full_video_grpo.jsonl files
-    full_video_pattern = os.path.join(input_dir, "*", "full_video_grpo.jsonl")
-    files.extend(glob.glob(full_video_pattern))
+    if data_type in {"all", "full_video"}:
+        full_video_pattern = os.path.join(input_dir, "*", "full_video_grpo.jsonl")
+        files.extend(glob.glob(full_video_pattern))
 
     return sorted(files)
 
@@ -53,6 +33,8 @@ def process_grpo_file(jsonl_path, input_dir):
     samples = []
     video_id_dir = os.path.basename(os.path.dirname(jsonl_path))
     basename = os.path.basename(jsonl_path)
+    file_stem = os.path.splitext(basename)[0]
+    parent_split = os.path.basename(input_dir)
     is_full_video = basename.startswith("full_video")
 
     with open(jsonl_path, "r", encoding="utf-8") as f:
@@ -67,7 +49,6 @@ def process_grpo_file(jsonl_path, input_dir):
             reference_reasoning = data.get("reference_reasoning", "")
             reward_type = data.get("reward_type", "")
 
-            # Extract video path from the prompt
             video_rel_path = None
             media_type = "video"
             for part in prompt[0]["content"]:
@@ -81,7 +62,8 @@ def process_grpo_file(jsonl_path, input_dir):
                 print(f"Warning: No video/image found in {jsonl_path}:{line_idx}")
                 continue
 
-            # Build prompt text from OpenAI format
+            video_rel_path = f"{parent_split}/{video_rel_path}"
+
             text_parts = []
             for part in prompt[0]["content"]:
                 if part["type"] == "video":
@@ -89,19 +71,16 @@ def process_grpo_file(jsonl_path, input_dir):
                 elif part["type"] == "image":
                     text_parts.append("<image>")
                 elif part["type"] == "text":
-                    text_parts.append(part["text"])
+                    text_parts.append(part.get("text", ""))
 
             prompt_text = "\n".join(text_parts)
-
-            # Build LLaVA conversations format
             conversations = [
                 {"from": "human", "value": prompt_text},
-                {"from": "gpt", "value": ""},  # Empty for GRPO - model generates
+                {"from": "gpt", "value": ""},
             ]
 
-            # Build sample id
             prefix = "full_" if is_full_video else ""
-            sample_id = f"grpo_{prefix}{video_id_dir}_{line_idx}"
+            sample_id = f"grpo_{prefix}{video_id_dir}_{file_stem}_{line_idx}"
 
             sample = {
                 "id": sample_id,
@@ -126,6 +105,8 @@ def main():
                         help="Output JSON file path")
     parser.add_argument("--split", type=str, default="train",
                         help="Dataset split name (train/val/test)")
+    parser.add_argument("--data-type", choices=["all", "clip", "full_video"], default="all",
+                        help="Which GRPO files to convert: clip-only, full-video-only, or all")
 
     args = parser.parse_args()
 
@@ -133,8 +114,8 @@ def main():
     if not os.path.isdir(input_dir):
         raise ValueError(f"Input directory does not exist: {input_dir}")
 
-    jsonl_files = collect_grpo_jsonl_files(input_dir)
-    print(f"Found {len(jsonl_files)} GRPO JSONL files in {input_dir}")
+    jsonl_files = collect_grpo_jsonl_files(input_dir, data_type=args.data_type)
+    print(f"Found {len(jsonl_files)} GRPO JSONL files in {input_dir} (--data-type={args.data_type})")
 
     all_samples = []
     for jsonl_path in jsonl_files:
@@ -144,21 +125,14 @@ def main():
 
     print(f"\nTotal GRPO samples: {len(all_samples)}")
 
-    # Count by question_type
-    qtypes = {}
-    for s in all_samples:
-        qt = s["question_type"]
-        qtypes[qt] = qtypes.get(qt, 0) + 1
-    print(f"By question type: {qtypes}")
+    qtypes = Counter(s["question_type"] for s in all_samples)
+    print(f"By question type: {dict(qtypes)}")
 
-    # Count by reward_type
-    rtypes = {}
-    for s in all_samples:
-        rt = s["reward_type"]
-        rtypes[rt] = rtypes.get(rt, 0) + 1
-    print(f"By reward type: {rtypes}")
+    rtypes = Counter(s["reward_type"] for s in all_samples)
+    print(f"By reward type: {dict(rtypes)}")
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    output_dir = os.path.dirname(args.output) or "."
+    os.makedirs(output_dir, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(all_samples, f, ensure_ascii=False, indent=2)
 

@@ -1,2 +1,6 @@
 from .sft_trainer import QwenSFTTrainer, GenerativeEvalPrediction
-from .grpo_trainer import QwenGRPOTrainer
+
+try:
+    from .grpo_trainer import QwenGRPOTrainer
+except ImportError:
+    QwenGRPOTrainer = None

@@ -3,13 +3,13 @@
 # This uses the SFT-merged model as base for RL fine-tuning.
 # Dataset: Cataract surgery video clips (multi-choice QA)
 
-# Use the SFT merged model as base
-MODEL_NAME=${MODEL_NAME:-"output/sft_merged"}
+# Use the SFT merged model as base (Phase 3/4)
+MODEL_NAME=${MODEL_NAME:-"output/sft_video_merged"}
 
-export PYTHONPATH=src:$PYTHONPATH
+export PYTHONPATH=src:${PYTHONPATH:-}
 
 # ---------- Hyperparameters (override via env vars) ----------
-DATA_PATH=${DATA_PATH:-"data/grpo_train.json"}
+DATA_PATH=${DATA_PATH:-"data/grpo_train_clip.json"}
 IMAGE_FOLDER=${IMAGE_FOLDER:-"dataset"}
 OUTPUT_DIR=${OUTPUT_DIR:-"output/grpo_lora"}
 NUM_EPOCHS=${NUM_EPOCHS:-1}
@@ -24,7 +24,6 @@ NUM_GENERATIONS=${NUM_GENERATIONS:-4}
 BATCH_PER_DEVICE=${BATCH_PER_DEVICE:-1}
 GRAD_ACCUM_STEPS=${GRAD_ACCUM_STEPS:-4}
 MAX_COMPLETION_LENGTH=${MAX_COMPLETION_LENGTH:-512}
-MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-1024}
 BETA=${BETA:-0.04}
 TEMPERATURE=${TEMPERATURE:-0.9}
 TOP_P=${TOP_P:-1.0}
@@ -33,6 +32,12 @@ TOP_P=${TOP_P:-1.0}
 # NFRAMES: caps sampled frames. Videos with fewer frames return all frames.
 FPS=${FPS:-}
 NFRAMES=${NFRAMES:-60}
+VIDEO_FRAME_ARGS=""
+if [ -n "$FPS" ]; then
+    VIDEO_FRAME_ARGS="--fps $FPS"
+else
+    VIDEO_FRAME_ARGS="--nframes $NFRAMES"
+fi
 
 VIDEO_MIN_PIXELS=${VIDEO_MIN_PIXELS:-$((128 * 32 * 32))}
 VIDEO_MAX_PIXELS=${VIDEO_MAX_PIXELS:-$((256 * 32 * 32))}
@@ -49,8 +54,8 @@ LORA_EXCLUDE=${LORA_EXCLUDE:-"['lm_head', 'embed_tokens']"}
 
 deepspeed src/train/train_grpo.py \
     --deepspeed $DEEPSPEED_CONFIG \
-    --use_liger_loss True \
-    --liger_grpo_loss_type $LIGER_GRPO_LOSS_TYPE \
+    --use_liger_kernel True \
+    --loss_type $LIGER_GRPO_LOSS_TYPE \
     --lora_enable True \
     --vision_lora True \
     --use_dora False \
@@ -62,7 +67,7 @@ deepspeed src/train/train_grpo.py \
     --model_id $MODEL_NAME \
     --data_path $DATA_PATH \
     --image_folder $IMAGE_FOLDER \
-    --freeze_vision_tower False \
+    --freeze_vision_tower True \
     --freeze_llm True \
     --freeze_merger False \
     --bf16 True \
@@ -74,11 +79,9 @@ deepspeed src/train/train_grpo.py \
     --per_device_train_batch_size $BATCH_PER_DEVICE \
     --gradient_accumulation_steps $GRAD_ACCUM_STEPS \
     --max_completion_length $MAX_COMPLETION_LENGTH \
-    --max_prompt_length $MAX_PROMPT_LENGTH \
     --video_min_pixels $VIDEO_MIN_PIXELS \
     --video_max_pixels $VIDEO_MAX_PIXELS \
-    $( [ -n "$FPS" ] && echo "--fps $FPS" ) \
-    $( [ -n "$NFRAMES" ] && echo "--nframes $NFRAMES" ) \
+    $VIDEO_FRAME_ARGS \
     --learning_rate $LEARNING_RATE \
     --merger_lr $MERGER_LR \
     --vision_lr $VISION_LR \

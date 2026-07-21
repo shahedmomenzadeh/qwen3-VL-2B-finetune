@@ -157,6 +157,41 @@ def get_image_info(image_path, min_pixel, max_pixel, width, height, image_patch_
     return image_input[0]
 
 
+def probe_total_frames(video_path):
+    """Probe a video file's total frame count without decoding all frames.
+
+    Tries decord first (already a dependency via qwen-vl-utils[decord]),
+    falls back to imageio, then OpenCV. Returns 0 if all methods fail.
+    """
+    # decord
+    try:
+        import decord
+        decord.bridge.set_use_decord(False)
+        vr = decord.VideoReader(video_path, num_threads=1)
+        return len(vr)
+    except Exception:
+        pass
+
+    # imageio
+    try:
+        import imageio.v3 as iio
+        return int(iio.count(video_path, plugin="pyav"))
+    except Exception:
+        pass
+
+    # OpenCV
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        return max(total, 0)
+    except Exception:
+        pass
+
+    return 0
+
+
 def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, nframes, image_patch_size, return_video_metadata=False):
     content = {
         "type": "video",
@@ -168,6 +203,14 @@ def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, nfram
     if fps is not None and nframes is None:
         content["fps"] = fps
     elif nframes is not None and fps is None:
+        # Cap nframes to the video's actual frame count to prevent
+        # ValueError in qwen_vl_utils.smart_nframes when nframes > total_frames.
+        total = probe_total_frames(video_path)
+        if total > 0 and nframes > total:
+            nframes = total
+        # smart_nframes requires at least 2 frames
+        if nframes < 2:
+            nframes = 2
         content["nframes"] = nframes
     elif fps is not None and nframes is not None:
         raise ValueError("You cannot set both `fps` and `nframes` at the same time. Set only one.")

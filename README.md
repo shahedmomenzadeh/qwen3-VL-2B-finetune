@@ -51,9 +51,10 @@ qwen3vl_2b_finetune/
 │   └── dataset_stats.py     # Analyze dataset statistics
 ├── eval/
 │   └── compute_metrics.py   # Custom evaluation metrics
-├── pyproject.toml
-├── requirements.txt
-├── environment.yaml           # DEPRECATED — use uv
+├── pyproject.toml               # Package config (uv)
+├── uv.lock                      # Locked uv dependency graph
+├── requirements.txt             # Flat deps (for pip)
+├── environment.yaml             # Deprecated — use uv
 └── README.md
 ```
 
@@ -105,26 +106,51 @@ The dataset is in `dataset/Train/`, `dataset/Validation/`, `dataset/Test/`.
 ### Step 1: Prepare SFT data
 
 ```bash
-# Training set
+# Training set, clip-level
 uv run python data/prepare_sft.py \
     --input-dir dataset/Train \
     --output data/sft_train_clip.json \
-    --split train
+    --split train \
+    --data-type clip
 
-# Validation set
+# Validation set, clip-level
 uv run python data/prepare_sft.py \
     --input-dir dataset/Validation \
     --output data/sft_val_clip.json \
-    --split val
+    --split val \
+    --data-type clip
+
+# Training set, full-video-level
+uv run python data/prepare_sft.py \
+    --input-dir dataset/Train \
+    --output data/sft_train_video.json \
+    --split train \
+    --data-type full_video
+
+# Validation set, full-video-level
+uv run python data/prepare_sft.py \
+    --input-dir dataset/Validation \
+    --output data/sft_val_video.json \
+    --split val \
+    --data-type full_video
 ```
 
 ### Step 2: Prepare GRPO data
 
 ```bash
+# Training set, clip-level
 uv run python data/prepare_grpo.py \
     --input-dir dataset/Train \
     --output data/grpo_train_clip.json \
-    --split train
+    --split train \
+    --data-type clip
+
+# Training set, full-video-level
+uv run python data/prepare_grpo.py \
+    --input-dir dataset/Train \
+    --output data/grpo_train_video.json \
+    --split train \
+    --data-type full_video
 ```
 
 ---

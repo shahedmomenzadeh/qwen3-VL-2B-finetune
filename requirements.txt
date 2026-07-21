@@ -31,4 +31,6 @@ latex2sympy2-extended
 gradio
 pillow
 datasets
-flash-attn>=2.6.0
+# flash-attn is optional because it is a C++ extension.
+# Install it separately with: uv pip install flash-attn --no-build-isolation
+# flash-attn>=2.6.0

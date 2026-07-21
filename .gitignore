@@ -8,16 +8,24 @@ dist/
 .venv/
 venv/
 
+# HuggingFace model cache
+hf_cache/
+
 # Training outputs
 output/
+
+# Generated data files (regenerate with prepare_sft.py / prepare_grpo.py)
+data/*.json
+data/tiny_test/
+
+# Dataset: exclude media & raw annotations (distributed separately)
+dataset/**/*.mp4
+dataset/**/*.jsonl
+dataset/*.zip
 
 # IDE
 .vscode/
 .idea/
-
-# Dataset media files (keep structure + README, exclude media)
-dataset/**/*.mp4
-dataset/**/*.jsonl
 
 # OS
 .DS_Store

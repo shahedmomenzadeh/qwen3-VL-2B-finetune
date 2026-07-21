@@ -95,12 +95,10 @@ class GRPOArguments(GRPOConfigTRL):
     temperature: float = 0.9
     top_p: float = 1.0
     top_k: int = 50
-    min_p: Optional[float] = None
     repetition_penalty: float = 1.0
     max_completion_length: int = 256
-    max_prompt_length: int = 512
-    use_liger_loss: bool = True
-    liger_grpo_loss_type: Optional[str] = field(default=None)
+    use_liger_kernel: bool = True
+    loss_type: Optional[str] = field(default=None)
 
 
 @dataclass

@@ -126,16 +126,16 @@ class QwenGRPOTrainer(GRPOTrainer):
         self._apply_liger_grpo_loss_type_override()
 
     def _apply_liger_grpo_loss_type_override(self) -> None:
-        desired = getattr(self.args, "liger_grpo_loss_type", None)
+        desired = getattr(self.args, "loss_type", None)
         if not desired:
             return
-        liger_grpo_loss = getattr(self, "liger_grpo_loss", None)
-        if liger_grpo_loss is None or not hasattr(liger_grpo_loss, "loss_type"):
+        liger_loss = getattr(self, "liger_loss", None)
+        if liger_loss is None or not hasattr(liger_loss, "loss_type"):
             return
-        previous = liger_grpo_loss.loss_type
-        liger_grpo_loss.loss_type = desired
+        previous = liger_loss.loss_type
+        liger_loss.loss_type = desired
         if getattr(self, "accelerator", None) is None or self.accelerator.is_main_process:
-            print(f"[QwenGRPOTrainer] liger_grpo_loss.loss_type: {previous!r} -> {desired!r}")
+            print(f"[QwenGRPOTrainer] liger_loss.loss_type: {previous!r} -> {desired!r}")
 
     def _set_signature_columns_if_needed(self):
         if self._signature_columns is None:
@@ -153,15 +153,13 @@ class QwenGRPOTrainer(GRPOTrainer):
         videos = getattr(self, '_current_videos', None)
         video_kwargs = getattr(self, '_current_video_kwargs', None)
 
-        model_id = getattr(self.model.config, "_name_or_path", "")
+        model_type = getattr(self.model.config, "model_type", "")
 
         processor_kwargs = {
             "text": prompts,
             "return_tensors": "pt",
             "padding": True,
             "padding_side": "left",
-            "max_length": self.max_prompt_length,
-            "truncation": True,
             "add_special_tokens": False,
         }
 
@@ -170,7 +168,7 @@ class QwenGRPOTrainer(GRPOTrainer):
             processor_kwargs["do_resize"] = False
 
         if videos is not None:
-            if "Qwen3" in model_id:
+            if model_type in {"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe"}:
                 batched_video_datas = []
                 batched_video_metadatas = []
                 for sample_videos in videos:
@@ -317,7 +315,7 @@ class QwenGRPOTrainer(GRPOTrainer):
 
         num_images = [len(img_list) for img_list in images] if images is not None else None
 
-        model_id = getattr(self.model.config, "_name_or_path", "")
+        model_type = getattr(self.model.config, "model_type", "")
 
         if images is not None or videos is not None:
             prompts_text = prompts
@@ -331,7 +329,7 @@ class QwenGRPOTrainer(GRPOTrainer):
             if images is not None:
                 processor_kwargs["images"] = images
             if videos is not None:
-                if "Qwen3" in model_id:
+                if model_type in {"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe"}:
                     batched_video_datas = []
                     batched_video_metadatas = []
                     for sample_videos in videos:
@@ -703,7 +701,7 @@ class QwenGRPOTrainer(GRPOTrainer):
             inputs.get("mm_token_type_ids"),
         )
 
-        loss, metrics = self.liger_grpo_loss(
+        loss, metrics = self.liger_loss(
             _input=last_hidden_state,
             lin_weight=unwrapped_model.lm_head.weight,
             selected_token_ids=completion_ids,
