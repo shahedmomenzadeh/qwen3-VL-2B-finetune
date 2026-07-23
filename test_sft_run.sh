@@ -73,20 +73,20 @@ for fname in ['sft_val_clip.json', 'sft_val_video.json']:
 MODEL_ID="Qwen/Qwen3-VL-2B-Instruct"
 OUTPUT_ROOT="output/tiny_sft_test"
 BITS=4
-LORA_RANK=4
+LORA_RANK=16
 LR=1e-4
 VISION_LR=2e-6
 MERGER_LR=1e-5
-NFRAMES=8                                  # very few frames for low VRAM
-VIDEO_MIN=$((32 * 32 * 32))                # 32768 pixels
-VIDEO_MAX=$((64 * 32 * 32))                # 65536 pixels
+NFRAMES=32                                 # 32 frames for temporal coverage
+VIDEO_MIN=$((64 * 32 * 32))               # 65536 pixels
+VIDEO_MAX=$((128 * 32 * 32))              # 131072 pixels
 BATCH_SIZE=1
 GRAD_ACCUM=1
 
 COMMON_ARGS=(
     --bits $BITS
     --lora_enable True --vision_lora True --use_dora False
-    --lora_rank $LORA_RANK --lora_alpha 8 --lora_dropout 0.0
+    --lora_rank $LORA_RANK --lora_alpha 32 --lora_dropout 0.0
     --num_lora_modules -1
     --lora_namespan_exclude "['lm_head', 'embed_tokens']"
     --freeze_vision_tower True --freeze_llm True --freeze_merger True

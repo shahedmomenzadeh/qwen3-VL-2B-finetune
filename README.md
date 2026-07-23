@@ -1,287 +1,344 @@
-# Qwen3-VL-2B-Instruct SFT + GRPO Fine-tuning
+# Qwen3-VL-2B Cataract Surgery Fine-tuning (SFT + GRPO)
 
-Fine-tuning **Qwen/Qwen3-VL-2B-Instruct** using LoRA with 4-bit QLoRA on cataract surgery video data.
+Fine-tune **Qwen/Qwen3-VL-2B-Instruct** with LoRA + 4-bit QLoRA on cataract surgery video data (clip-level descriptions, full-video narration, and multi-choice question answering for RL).
 
-Pipeline:
-1. **SFT** (Supervised Fine-Tuning) with LoRA + QLoRA on video description/QA data
-2. **Merge** LoRA weights with base model
-3. **GRPO** (Group Relative Policy Optimization) with LoRA + QLoRA on multi-choice reward data
+The pipeline has two stages, each with a clip-level and full-video-level training pass:
+
+1. **SFT** (Supervised Fine-Tuning) on visual description / chain-of-thought QA
+2. **GRPO** (Group Relative Policy Optimization) on multi-choice reward data
+
+The codebase is derived from [`Qwen-VL-Series-Finetune`](https://github.com/) but adapted specifically for Qwen3-VL and the cataract surgery dataset.
+
+---
+
+## Quick Start (end-to-end on a GPU server)
+
+```bash
+# 1. Clone
+git clone https://github.com/shahedmomenzadeh/qwen3-VL-2B-finetune.git
+cd qwen3-VL-2B-finetune
+
+# 2. Edit train_sft.sh: set the three Google Drive IDs (lines 18-20)
+
+# 3. Run — sets up env, downloads data, prepares JSONs, trains
+bash train_sft.sh                              # full training (48 GB VRAM)
+SUBSET_RATIO=0.3 bash train_sft.sh              # 30% subsample (smoke test)
+BITS=16 NFRAMES=48 bash train_sft.sh            # 16-bit LoRA, no quantization
+```
+
+The script is **idempotent** — if `dataset/`, `.venv/`, or `output/` already exist, the corresponding step is skipped.
+
+---
+
+## What `train_sft.sh` does
+
+| Step | Action |
+|------|--------|
+| 1 | Install `uv` (if missing) → create `.venv` → install PyTorch (cu130) + transformers (GitHub main) + peft + trl ≥ 1.8.0 + liger-kernel + bitsandbytes + qwen-vl-utils + gdown + optional flash-attn |
+| 2 | Download `Train.zip` / `Validation.zip` / `Test.zip` from Google Drive → unzip into `dataset/`. **Skips any split already present on disk.** |
+| 3 | Run `prepare_sft.py` ×4 (clip+video × train+val) → generates LLaVA-format JSONs with split-prefixed video paths and unique sample IDs |
+| 4 | If `SUBSET_RATIO < 1.0`: subsample training JSONs with seeded shuffle (eval is **not** subsampled) |
+| 5 | **SFT Stage 1** — clip training → `output/sft_clip_lora/` |
+| 6 | Merge Stage 1 LoRA → `output/sft_clip_merged/` |
+| 7 | **SFT Stage 2** — full-video training (base = merged clips) → `output/sft_video_lora/` |
+| 8 | Merge Stage 2 LoRA → `output/sft_video_merged/` (**final SFT model**) |
+
+After SFT, the same flow repeats for GRPO via `train.sh` (clips → merge → videos → merge).
 
 ---
 
 ## Project Structure
 
 ```
-qwen3vl_2b_finetune/
-├── src/                     # Core training code
-│   ├── params.py            # All training arguments
-│   ├── constants.py         # Token constants
-│   ├── utils.py             # Model loading, reward func loading
-│   ├── merge_lora.py        # Merge LoRA weights
-│   ├── dataset/             # Dataset classes
-│   │   ├── sft_dataset.py   # SFT dataset (video + image)
-│   │   ├── grpo_dataset.py  # GRPO dataset (video + image)
-│   │   └── data_utils.py    # Video/image processing utilities
-│   ├── trainer/             # Custom trainers
-│   │   ├── sft_trainer.py   # SFT trainer with generation-based eval
-│   │   └── grpo_trainer.py  # GRPO trainer with multimodal support
-│   ├── train/               # Training entry points
-│   │   ├── train_sft.py     # SFT training entry point
-│   │   ├── train_grpo.py    # GRPO training entry point
-│   │   ├── reward_funcs.py  # Custom reward functions
-│   │   └── train_utils.py   # State dict helpers
-│   │   ├── monkey_patch_forward.py  # Qwen-VL mixed modality forward
-│   │   └── monkey_patch_vision.py   # Vision transformer patches
-│   └── model/
-│       └── load_model.py    # Model loading with monkey patches
-├── scripts/                 # Training & merge scripts
+qwen3-VL-2B-finetune/
+├── train_sft.sh              # End-to-end SFT pipeline (env + data + train)
+├── train.sh                  # End-to-end SFT + GRPO pipeline (full 4-stage)
+├── test_sft_run.sh           # Smoke test on 1 video (8 GB VRAM)
+├── setup.sh                  # Manual env setup (called by train_sft.sh)
+├── ISSUES_REPORT.md          # All bugs found + fixes applied
+│
+├── src/
+│   ├── params.py             # All training/HF argument dataclasses
+│   ├── constants.py          # IGNORE_INDEX, vision tokens, SYSTEM_MESSAGE
+│   ├── utils.py              # load_pretrained_model (for merge), reward func loading
+│   ├── merge_lora.py         # Fuse LoRA adapter into base model
+│   ├── model/
+│   │   └── load_model.py     # Qwen-VL model load + monkey-patch dispatch
+│   ├── dataset/
+│   │   ├── sft_dataset.py    # SFT SupervisedDataset + collator
+│   │   ├── grpo_dataset.py   # GRPO GRPODataset (returns raw dicts)
+│   │   └── data_utils.py     # Video/image processing, frame-probe, chat template
+│   ├── trainer/
+│   │   ├── sft_trainer.py    # SFT trainer with generation-based eval
+│   │   └── grpo_trainer.py   # GRPO trainer (TRL 1.8.0+ compatible)
+│   └── train/
+│       ├── train_sft.py      # SFT entry point (QLoRA + LoRA setup)
+│       ├── train_grpo.py     # GRPO entry point
+│       ├── reward_funcs.py   # deterministic_reward, llm_judge_reward, format_reward
+│       ├── train_utils.py    # DeepSpeed-OPTIONAL state-dict helpers
+│       ├── monkey_patch_forward.py  # Qwen3-VL mixed-modality forward
+│       └── monkey_patch_vision.py   # Qwen2.5-VL vision patch (legacy)
+│
+├── scripts/                  # Original single-stage scripts (lower-level)
 │   ├── finetune_sft_lora.sh
 │   ├── finetune_grpo_lora.sh
 │   ├── merge_lora.sh
-│   ├── zero2.json
-│   ├── zero3.json
-│   ├── zero2_offload.json
-│   └── zero3_offload.json
-├── configs/                 # YAML config files
+│   ├── zero2.json, zero2_offload.json, zero3.json, zero3_offload.json
+│
+├── configs/                  # Reference YAML configs (not auto-read)
 │   ├── sft_config.yaml
 │   └── grpo_config.yaml
-├── data/                    # Data preparation
-│   ├── prepare_sft.py       # Convert JSONL → LLaVA format for SFT
-│   ├── prepare_grpo.py      # Convert JSONL → GRPO format
-│   └── dataset_stats.py     # Analyze dataset statistics
+│
+├── data/
+│   ├── prepare_sft.py        # JSONL → LLaVA-format JSON (with split prefix)
+│   ├── prepare_grpo.py       # JSONL → GRPO-format JSON
+│   ├── dataset_stats.py      # Dataset summary script
+│   ├── tiny_test/            # 1-video subset (auto-generated by test_sft_run.sh)
+│   └── *.json                # Prepared train/val JSONs (gitignored, regenerate)
+│
 ├── eval/
-│   └── compute_metrics.py   # Custom evaluation metrics
-├── pyproject.toml               # Package config (uv)
-├── uv.lock                      # Locked uv dependency graph
-├── requirements.txt             # Flat deps (for pip)
-├── environment.yaml             # Deprecated — use uv
+│   └── compute_metrics.py    # exact_match, contains_match, reasoning_rate
+│
+├── check_lora_weights.py     # Verifies LoRA B went from zero to non-zero
+│
+├── dataset/                  # Raw dataset (NOT in git, downloaded from Drive)
+│   ├── README.md             # Dataset schema
+│   ├── Train/                # YT_ID/clip_xx.mp4 + *_sft.jsonl + *_grpo.jsonl
+│   ├── Validation/
+│   └── Test/
+│
+├── pyproject.toml            # Package config (uv)
+├── uv.lock                   # Locked uv dependency graph
+├── requirements.txt          # Flat deps (for pip)
+├── .gitignore
 └── README.md
 ```
 
 ---
 
-## Installation
+## Configuration (env vars for `train_sft.sh`)
 
-### Prerequisites
+All have sensible defaults for a 48 GB single-GPU server. Override any via env vars.
 
-- Python ≥ 3.10
-- NVIDIA GPU with CUDA 12.4
-- [uv](https://docs.astral.sh/uv/) (fast Python package manager)
+### Model
+| Var | Default | Description |
+|-----|---------|-------------|
+| `MODEL_ID` | `Qwen/Qwen3-VL-2B-Instruct` | Base model (HuggingFace ID or local path) |
+| `BITS` | 4 | Quantization: 4 / 8 / 16. QLoRA at 4/8; full LoRA at 16 |
 
-### Setup
+### LoRA
+| Var | Default | Description |
+|-----|---------|-------------|
+| `LORA_RANK` | 32 | LoRA rank (alpha = 2× rank) |
+| `LORA_ALPHA` | 64 | LoRA alpha |
+| `LORA_DROPOUT` | 0.05 | LoRA dropout |
 
+### Training
+| Var | Default | Description |
+|-----|---------|-------------|
+| `BATCH_PER_DEVICE` | 4 | Per-device micro batch |
+| `GRAD_ACCUM` | 4 | Gradient accumulation → global batch 16 |
+| `NUM_DEVICES` | 1 | Number of GPUs |
+| `NUM_EPOCHS` | 2 | SFT epochs |
+| `LR` | 1e-4 | LLM LoRA learning rate |
+| `VISION_LR` | 2e-6 | Vision-tower LoRA LR |
+| `MERGER_LR` | 1e-5 | Merger LoRA LR |
+| `WEIGHT_DECAY` | 0.1 | |
+| `WARMUP_RATIO` | 0.03 | |
+| `LR_SCHEDULER` | `cosine` | |
+
+### Video
+| Var | Default | Description |
+|-----|---------|-------------|
+| `NFRAMES` | 60 | Max frames sampled per video (auto-capped to actual length) |
+| `FPS` | — | Alternative to NFRAMES (mutually exclusive) |
+| `VIDEO_MIN_PIXELS` | `128×32×32` = 131072 | Min video resolution |
+| `VIDEO_MAX_PIXELS` | `256×32×32` = 262144 | Max video resolution |
+
+### Eval / save
+| Var | Default | Description |
+|-----|---------|-------------|
+| `EVAL_STRATEGY` | `steps` | |
+| `EVAL_STEPS` | 300 | |
+| `SAVE_STRATEGY` | `steps` | |
+| `SAVE_STEPS` | 300 | |
+| `SAVE_TOTAL_LIMIT` | 3 | |
+| `PER_DEVICE_EVAL_BATCH_SIZE` | 1 | |
+
+### Misc
+| Var | Default | Description |
+|-----|---------|-------------|
+| `SUBSET_RATIO` | 1.0 | Use only this fraction of training data (0.0–1.0). Eval always uses full set. |
+| `DISABLE_FLASH_ATTN2` | 0 | Set 1 to use SDPA instead of flash-attn (if flash-attn install fails) |
+| `INSTALL_FLASH_ATTN` | 1 | Set 0 to skip flash-attn install |
+| `ENABLE_GEN_EVAL` | 1 | Use generation-based eval metrics (sets `SFT_COMPUTE_METRICS=eval/compute_metrics.py`) |
+| `FORCE_REPREPARE` | 0 | Set 1 to regenerate prepared JSONs even if they exist |
+| `HF_TOKEN` | — | Required if downloading from private/gated models |
+
+---
+
+## Dataset
+
+The dataset follows the schema in [`dataset/README.md`](dataset/README.md):
+
+```
+dataset/
+├── Train/
+│   ├── <YT_ID>/
+│   │   ├── full_video.mp4
+│   │   ├── full_video_sft.jsonl     # 2 lines: timestamped narration + step-ordering CoT
+│   │   ├── full_video_grpo.jsonl    # 1 line: sequence-ordering MCQ
+│   │   ├── clip_01.mp4
+│   │   ├── clip_01_sft.jsonl        # 1-4 lines: description + CoT MCQ
+│   │   ├── clip_01_grpo.jsonl       # 1-3 lines: step / instrument / visual MCQ
+│   │   └── ...
+├── Validation/
+└── Test/
+```
+
+The dataset is **not included in this repo** (too large). It's distributed via Google Drive (set the IDs in `train_sft.sh`).
+
+### Dataset format
+- **SFT** samples are converted to LLaVA format: `{id, video, conversations: [{from:"human", value:"..."}, {from:"gpt", value:"..."}]}`
+- **GRPO** samples are converted to: `{id, video, conversations, correct_answer, question_type, reference_reasoning, reward_type}`
+- Video paths in the prepared JSONs are prefixed with the split name (e.g., `Train/<YT_ID>/clip_01.mp4`) so a single `image_folder=dataset` works for both train and eval
+
+---
+
+## Stage-by-stage Manual Run
+
+If you prefer the lower-level scripts (or want to customize a single stage):
+
+### Environment
 ```bash
-# 1. Install uv (if not already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 2. Create and activate a virtual environment
-uv venv
+bash setup.sh                                  # creates .venv + installs all deps
 source .venv/bin/activate
-
-# 3. Install all dependencies (including torch with CUDA 12.4)
-uv sync
-
-# 4. Install flash-attn separately (C++ extension, needs --no-build-isolation)
-uv pip install flash-attn --no-build-isolation
-
-# 5. Verify GPU is detected
-uv run python -c "import torch; print(torch.cuda.is_available())"
+export PYTHONPATH=src:${PYTHONPATH:-}
+export HF_HOME=$PWD/hf_cache
 ```
 
-### Quick reference
-
-| Command | Description |
-|---------|-------------|
-| `uv sync` | Install / sync all deps from pyproject.toml |
-| `uv add <pkg>` | Add a new dependency |
-| `uv run <cmd>` | Run a command in the venv |
-| `uv pip install flash-attn --no-build-isolation` | Install flash-attn |
-
----
-
-## Dataset Preparation
-
-The dataset is in `dataset/Train/`, `dataset/Validation/`, `dataset/Test/`.
-
-### Step 1: Prepare SFT data
-
+### Data prep
 ```bash
-# Training set, clip-level
-uv run python data/prepare_sft.py \
-    --input-dir dataset/Train \
-    --output data/sft_train_clip.json \
-    --split train \
-    --data-type clip
-
-# Validation set, clip-level
-uv run python data/prepare_sft.py \
-    --input-dir dataset/Validation \
-    --output data/sft_val_clip.json \
-    --split val \
-    --data-type clip
-
-# Training set, full-video-level
-uv run python data/prepare_sft.py \
-    --input-dir dataset/Train \
-    --output data/sft_train_video.json \
-    --split train \
-    --data-type full_video
-
-# Validation set, full-video-level
-uv run python data/prepare_sft.py \
-    --input-dir dataset/Validation \
-    --output data/sft_val_video.json \
-    --split val \
-    --data-type full_video
+python data/prepare_sft.py --input-dir dataset/Train      --output data/sft_train_clip.json   --data-type clip
+python data/prepare_sft.py --input-dir dataset/Train      --output data/sft_train_video.json  --data-type full_video
+python data/prepare_sft.py --input-dir dataset/Validation --output data/sft_val_clip.json     --data-type clip
+python data/prepare_sft.py --input-dir dataset/Validation --output data/sft_val_video.json    --data-type full_video
 ```
 
-### Step 2: Prepare GRPO data
-
+### SFT stage 1 (clips) + merge
 ```bash
-# Training set, clip-level
-uv run python data/prepare_grpo.py \
-    --input-dir dataset/Train \
-    --output data/grpo_train_clip.json \
-    --split train \
-    --data-type clip
+bash scripts/finetune_sft_lora.sh        # → output/sft_clip_lora/
+bash scripts/merge_lora.sh               # → output/sft_clip_merged/
+```
 
-# Training set, full-video-level
-uv run python data/prepare_grpo.py \
-    --input-dir dataset/Train \
-    --output data/grpo_train_video.json \
-    --split train \
-    --data-type full_video
+### SFT stage 2 (full videos) + merge
+```bash
+MODEL_NAME=output/sft_clip_merged bash scripts/finetune_sft_lora.sh   # → output/sft_video_lora/
+bash scripts/merge_lora.sh               # → output/sft_video_merged/
+```
+
+### GRPO stages (similar, using `scripts/finetune_grpo_lora.sh`)
+
+### Full pipeline with GRPO
+```bash
+bash train.sh                             # SFT + GRPO (4 stages total)
 ```
 
 ---
 
-## Training Pipeline
+## LoRA Architecture
 
-### Phase 1: Clip SFT
+With `vision_lora=True` + `freeze_vision_tower=True` + `bits=4`, the LoRA adapters are applied to **301 linear/embedding modules** (verified at runtime):
 
+| Component | # modules | Module types |
+|-----------|-----------|--------------|
+| LLM (28 transformer layers) | 196 | `self_attn.{q,k,v,o}_proj`, `mlp.{gate,up,down}_proj` (× 28) |
+| Vision tower (24 blocks) | 96 | `attn.{qkv,proj}`, `mlp.{linear_fc1,linear_fc2}` (× 24) |
+| Merger | 2 | `merger.{linear_fc1,linear_fc2}` |
+| Deepstack merger | 6 | `0/1/2.{linear_fc1,linear_fc2}` |
+| Pos embed | 1 | `visual.pos_embed` (Embedding) |
+| **Total** | **301** | |
+
+**Excluded:** `embed_tokens`, `lm_head` (via `lora_namespan_exclude`).
+
+The base weights are **frozen** (4-bit quantized, requires_grad=False). Only the LoRA A/B adapter matrices are trainable.
+
+To verify training is actually happening, use [`check_lora_weights.py`](check_lora_weights.py):
 ```bash
-MODEL_NAME=Qwen/Qwen3-VL-2B-Instruct \
-DATA_PATH=data/sft_train_clip.json \
-EVAL_PATH=data/sft_val_clip.json \
-OUTPUT_DIR=output/sft_clip_lora \
-NFRAMES=60 \
-bash scripts/finetune_sft_lora.sh
-```
-
-### Phase 2: Video SFT
-
-```bash
-MODEL_NAME=output/sft_clip_merged \
-DATA_PATH=data/sft_train_video.json \
-EVAL_PATH=data/sft_val_video.json \
-OUTPUT_DIR=output/sft_video_lora \
-NFRAMES=60 \
-bash scripts/finetune_sft_lora.sh
-```
-
-### Merge After SFT
-
-```bash
-# Phase 1 merge
-MODEL_PATH=output/sft_clip_lora \
-MODEL_BASE=Qwen/Qwen3-VL-2B-Instruct \
-SAVE_MODEL_PATH=output/sft_clip_merged \
-bash scripts/merge_lora.sh
-
-# Phase 2 merge
-MODEL_PATH=output/sft_video_lora \
-MODEL_BASE=output/sft_clip_merged \
-SAVE_MODEL_PATH=output/sft_video_merged \
-bash scripts/merge_lora.sh
-```
-
-### Phase 3: Clip GRPO
-
-```bash
-MODEL_NAME=output/sft_video_merged \
-DATA_PATH=data/grpo_train_clip.json \
-OUTPUT_DIR=output/grpo_clip_lora \
-NFRAMES=60 \
-bash scripts/finetune_grpo_lora.sh
-```
-
-### Phase 4: Video GRPO
-
-```bash
-MODEL_NAME=output/sft_video_merged \
-DATA_PATH=data/grpo_train_video.json \
-OUTPUT_DIR=output/grpo_video_lora \
-NFRAMES=60 \
-bash scripts/finetune_grpo_lora.sh
-```
-
-### Merge Final Model
-
-```bash
-MODEL_PATH=output/grpo_video_lora \
-MODEL_BASE=output/sft_video_merged \
-SAVE_MODEL_PATH=output/grpo_merged \
-bash scripts/merge_lora.sh
-```
-
-All parameters are adjustable via environment variables. For example:
-
-```bash
-GLOBAL_BATCH_SIZE=16 \
-BATCH_PER_DEVICE=1 \
-NUM_DEVICES=1 \
-VIDEO_MIN_PIXELS=$((64 * 32 * 32)) \
-VIDEO_MAX_PIXELS=$((128 * 32 * 32)) \
-LEARNING_RATE=5e-5 \
-DATA_PATH=data/sft_train_clip.json \
-EVAL_PATH=data/sft_val_clip.json \
-bash scripts/finetune_sft_lora.sh
+python check_lora_weights.py output/sft_clip_lora
+# Verifies lora_B went from all-zeros (init) to non-zero (trained)
 ```
 
 ---
 
-## Key Parameters
+## Known Issues (full list: [ISSUES_REPORT.md](ISSUES_REPORT.md))
 
-| Parameter | SFT Default | GRPO Default | Description |
-|-----------|-------------|--------------|-------------|
-| `NFRAMES` | 60 | 60 | Max frames to sample (caps at video length) |
-| `FPS` | — | — | Alternative to NFRAMES (mutually exclusive) |
-| `VIDEO_MIN_PIXELS` | 128×32×32 | 128×32×32 | Min video resolution |
-| `VIDEO_MAX_PIXELS` | 256×32×32 | 256×32×32 | Max video resolution |
-| `LORA_RANK` | 32 | 32 | LoRA rank |
-| `LORA_ALPHA` | 64 | 64 | LoRA alpha |
-| `LORA_DROPOUT` | 0.05 | 0.05 | LoRA dropout |
-| `LEARNING_RATE` | 1e-4 | 5e-6 | LLM learning rate |
-| `VISION_LR` | 2e-6 | 2e-6 | Vision tower LR |
-| `MERGER_LR` | 1e-5 | 1e-5 | Merger LR |
-| `BITS` | 4 | 4 | Quantization (4/8/16) |
-| `NUM_GENERATIONS` | N/A | 4 | GRPO group size |
-| `BETA` | N/A | 0.04 | KL coefficient |
-| `TEMPERATURE` | N/A | 0.9 | Generation temperature |
+Fixed in current codebase:
+- ✅ **C1** — `IMAGE_FOLDER` path resolution (data prep now prepends `Train/` / `Validation/` to video paths)
+- ✅ **C3** — Duplicate sample IDs in prepared JSONs (IDs now include file basename)
+- ✅ **C4** — `lora_bias="lora_only"` dict-iteration bug
+- ✅ **H2** — Vision tower `.to(dtype)` on BnB-quantized modules (now branches on `bits` and forces frozen when quantized)
+- ✅ **H4** — `SFT_COMPUTE_METRICS` not set (now enabled by default in `train_sft.sh`)
+- ✅ **M4** — `use_dora` parsed but never passed to `LoraConfig`
+- ✅ Video frame count probing (caps `nframes` to video's actual length to prevent `qwen_vl_utils` crashes on short clips)
+- ✅ TRL 1.8.0 migration (`use_liger_kernel`, `loss_type`, `liger_loss` renames; `max_prompt_length` removed)
+- ✅ DeepSpeed made optional (try/except import; `getattr` check)
 
-> **Note for Qwen3-VL models**: The pixel grid is `token * 32 * 32` (patch_size=16), NOT `token * 28 * 28`.
+Known limitations (not yet fixed, GRPO-specific):
+- ⚠ **C2** — `deterministic_reward` regex case-broken (degrades to substring match; gives false positives for short answers in text containing the letter)
+- ⚠ **H3** — `llm_judge_reward` is keyword-overlap heuristic, not an actual teacher LLM
+- ⚠ **H5** — GRPO eval dataset hardcoded to None in `make_grpo_data_module`
 
-> **Important**: Do NOT set `FPS` and `NFRAMES` at the same time. They are mutually exclusive.
-
-> **Known issue**: If using CuDNN errors, run `unset LD_LIBRARY_PATH` before training.
+These do not affect SFT training; only GRPO.
 
 ---
 
-## Evaluation During Training
+## VRAM Usage
 
-Set `SFT_COMPUTE_METRICS` env var to load custom metrics:
+| Config | VRAM | Notes |
+|--------|------|-------|
+| `BITS=4, NFRAMES=8, batch=1, rank=4` (smoke test) | ~2 GB | Tested on 8 GB GPU |
+| `BITS=4, NFRAMES=32, batch=1, rank=16` (recommended test) | ~4-5 GB | |
+| `BITS=4, NFRAMES=60, batch=4, rank=32, full res` (48 GB default) | ~10-15 GB | Single GPU |
+
+---
+
+## Testing (smoke test on a small GPU)
+
+`test_sft_run.sh` runs the full SFT pipeline on **1 video** with minimal VRAM settings:
 
 ```bash
-export SFT_COMPUTE_METRICS=/path/to/qwen3vl_2b_finetune/eval/compute_metrics.py
-bash scripts/finetune_sft_lora.sh
+bash test_sft_run.sh
+```
+
+This:
+1. Picks the smallest video (e.g., `MruUgO5HFZI`: 8 clips)
+2. Creates `data/tiny_test/` with 8 clip samples + 2 full-video samples
+3. Trains SFT clip + merge + SFT video + merge
+4. ~2 GB VRAM, ~30 seconds end-to-end
+5. Verifies LoRA weights changed via `check_lora_weights.py`
+
+To verify training works (lora_B went from zeros to non-zero), run after:
+```bash
+python check_lora_weights.py output/tiny_sft_test/sft_clip_lora
+# Expected: lora_B 300/300 non-zero, max magnitude > 0
 ```
 
 ---
 
-## Training Notes
+## File Locations Summary
 
-- **A100 80GB** with ZeRO-3 offload: comfortably fits the 2B model with 4-bit LoRA
-- **4-bit QLoRA** + LoRA: set `--bits 4`, vision tower remains in full precision
-- **Liger-Kernel**: enabled by default for memory-efficient training
-- **Mixed-modality**: supports both clip-level (8-15s) and full-video (several minutes) data
-- **Video resolution**: lower for full videos (`--video_min_pixels $((64 * 32 * 32)) --video_max_pixels $((128 * 32 * 32))`)
+| Output | Path |
+|--------|------|
+| Stage 1 adapter (clips) | `output/sft_clip_lora/` |
+| Stage 1 merged | `output/sft_clip_merged/` |
+| Stage 2 adapter (videos) | `output/sft_video_lora/` |
+| **Final SFT model** | `output/sft_video_merged/` |
+| GRPO clip adapter | `output/grpo_clip_lora/` |
+| **Final GRPO model** | `output/grpo_video_merged/` |
+
+---
+
+## License
+
+[Add your license here]
