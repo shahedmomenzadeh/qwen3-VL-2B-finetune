@@ -39,7 +39,7 @@ learning_rate: 5e-6
 vision_lr: 2e-6
 merger_lr: 1e-5
 weight_decay: 0.1
-warmup_ratio: 0.03
+warmup_steps: 10
 lr_scheduler_type: "cosine"
 num_train_epochs: 1
 

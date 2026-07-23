@@ -200,7 +200,7 @@ LR="${LR:-1e-4}"
 VISION_LR="${VISION_LR:-2e-6}"
 MERGER_LR="${MERGER_LR:-1e-5}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
-WARMUP_RATIO="${WARMUP_RATIO:-0.03}"
+WARMUP_STEPS="${WARMUP_STEPS:-10}"
 LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 NUM_EPOCHS="${NUM_EPOCHS:-2}"
 
@@ -335,7 +335,7 @@ COMMON_ARGS=(
     --per_device_train_batch_size "$BATCH_PER_DEVICE"
     --gradient_accumulation_steps "$GRAD_ACCUM"
     --learning_rate "$LR" --vision_lr "$VISION_LR" --merger_lr "$MERGER_LR"
-    --weight_decay "$WEIGHT_DECAY" --warmup_ratio "$WARMUP_RATIO"
+    --weight_decay "$WEIGHT_DECAY" --warmup_steps "$WARMUP_STEPS"
     --lr_scheduler_type "$LR_SCHEDULER"
     --video_min_pixels "$VIDEO_MIN_PIXELS" --video_max_pixels "$VIDEO_MAX_PIXELS"
     $VIDEO_FRAME_ARGS

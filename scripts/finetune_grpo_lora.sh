@@ -87,7 +87,7 @@ deepspeed src/train/train_grpo.py \
     --vision_lr $VISION_LR \
     --remove_unused_columns False \
     --weight_decay 0.1 \
-    --warmup_ratio 0.03 \
+    --warmup_steps 10 \
     --lr_scheduler_type "cosine" \
     --beta $BETA \
     --temperature $TEMPERATURE \

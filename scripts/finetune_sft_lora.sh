@@ -97,7 +97,7 @@ deepspeed src/train/train_sft.py \
     --merger_lr $MERGER_LR \
     --vision_lr $VISION_LR \
     --weight_decay 0.1 \
-    --warmup_ratio 0.03 \
+    --warmup_steps 10 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
     --tf32 True \

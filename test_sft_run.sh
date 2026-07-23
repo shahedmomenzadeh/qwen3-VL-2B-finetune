@@ -97,7 +97,7 @@ COMMON_ARGS=(
     --per_device_train_batch_size $BATCH_SIZE
     --gradient_accumulation_steps $GRAD_ACCUM
     --learning_rate $LR --vision_lr $VISION_LR --merger_lr $MERGER_LR
-    --weight_decay 0.0 --warmup_ratio 0.0
+    --weight_decay 0.0 --warmup_steps 0
     --lr_scheduler_type constant
     --video_min_pixels "$VIDEO_MIN" --video_max_pixels "$VIDEO_MAX"
     --nframes $NFRAMES

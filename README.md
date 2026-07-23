@@ -144,7 +144,7 @@ All have sensible defaults for a 48 GB single-GPU server. Override any via env v
 | `VISION_LR` | 2e-6 | Vision-tower LoRA LR |
 | `MERGER_LR` | 1e-5 | Merger LoRA LR |
 | `WEIGHT_DECAY` | 0.1 | |
-| `WARMUP_RATIO` | 0.03 | |
+| `WARMUP_STEPS` | 10 | Warmup steps (transformers 5.x removed `warmup_ratio`) |
 | `LR_SCHEDULER` | `cosine` | |
 
 ### Video

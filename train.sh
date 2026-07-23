@@ -200,7 +200,7 @@ if [ ! -f "${SFT_CLIP_OUT}/adapter_config.json" ]; then
         --vision_lr "$VISION_LR" \
         --merger_lr "$MERGER_LR" \
         --weight_decay 0.1 \
-        --warmup_ratio 0.03 \
+        --warmup_steps 10 \
         --lr_scheduler_type cosine \
         --video_min_pixels "$VIDEO_MIN_PIXELS" \
         --video_max_pixels "$VIDEO_MAX_PIXELS" \
@@ -278,7 +278,7 @@ if [ ! -f "${SFT_VIDEO_OUT}/adapter_config.json" ]; then
         --vision_lr "$VISION_LR" \
         --merger_lr "$MERGER_LR" \
         --weight_decay 0.1 \
-        --warmup_ratio 0.03 \
+        --warmup_steps 10 \
         --lr_scheduler_type cosine \
         --video_min_pixels "$VIDEO_MIN_PIXELS" \
         --video_max_pixels "$VIDEO_MAX_PIXELS" \
@@ -361,7 +361,7 @@ if [ ! -f "${GRPO_CLIP_OUT}/adapter_config.json" ]; then
         --temperature "$TEMPERATURE" \
         --top_p "$TOP_P" \
         --weight_decay 0.1 \
-        --warmup_ratio 0.03 \
+        --warmup_steps 10 \
         --lr_scheduler_type cosine \
         --video_min_pixels "$VIDEO_MIN_PIXELS" \
         --video_max_pixels "$VIDEO_MAX_PIXELS" \
@@ -433,7 +433,7 @@ if [ ! -f "${GRPO_VIDEO_OUT}/adapter_config.json" ]; then
         --temperature "$TEMPERATURE" \
         --top_p "$TOP_P" \
         --weight_decay 0.1 \
-        --warmup_ratio 0.03 \
+        --warmup_steps 10 \
         --lr_scheduler_type cosine \
         --video_min_pixels "$VIDEO_MIN_PIXELS" \
         --video_max_pixels "$VIDEO_MAX_PIXELS" \

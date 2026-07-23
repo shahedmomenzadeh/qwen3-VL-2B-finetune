@@ -264,6 +264,27 @@ def train():
 
     trainer.save_state()
 
+    # ── Save training metadata for plotting/tracking ──────────────────
+    if local_rank == 0 or local_rank is None or local_rank == -1:
+        import json as _json
+        from dataclasses import asdict as _asdict
+
+        # Per-step metrics (log_history is already in trainer_state.json,
+        # but save a clean standalone copy for easy loading in plotting scripts)
+        log_history = getattr(trainer.state, "log_history", [])
+        with open(os.path.join(training_args.output_dir, "log_history.json"), "w") as f:
+            _json.dump(log_history, f, indent=2, default=float)
+
+        # Training / model / data arguments
+        with open(os.path.join(training_args.output_dir, "training_args.json"), "w") as f:
+            _json.dump(_asdict(training_args), f, indent=2, default=str)
+        with open(os.path.join(training_args.output_dir, "model_args.json"), "w") as f:
+            _json.dump(_asdict(model_args), f, indent=2, default=str)
+        with open(os.path.join(training_args.output_dir, "data_args.json"), "w") as f:
+            _json.dump(_asdict(data_args), f, indent=2, default=str)
+
+        rank0_print(f"Training metadata saved to {training_args.output_dir}")
+
     model.config.use_cache = True
 
     if training_args.lora_enable:
