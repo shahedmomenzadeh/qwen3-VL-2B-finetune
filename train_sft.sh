@@ -21,6 +21,17 @@ TEST_ZIP_ID="${TEST_ZIP_ID:-PUT_TEST_ZIP_GOOGLE_DRIVE_ID_HERE}"
 #
 # Also set HF_TOKEN if you need to download the model from HuggingFace:
 #   export HF_TOKEN=hf_xxxxx
+#
+# ── OPTIONAL: auto-upload the final SFT checkpoint to HuggingFace Hub ──────
+# Set HF_UPLOAD_ENABLED=1 to enable automatic upload after the final merge.
+# Requires a HuggingFace write-access token and a target repo ID.
+#
+#   HF_UPLOAD_ENABLED=1 \
+#   HF_TOKEN=hf_xxxx \
+#   HF_HUB_REPO=your-username/qwen3-vl-2b-cataract-sft \
+#   bash train_sft.sh
+#
+# HF_PRIVATE=1 creates a private repository (default: public).
 # ============================================================================
 
 set -euo pipefail
@@ -40,7 +51,18 @@ log "=== 1. Environment Setup ==="
 if ! command -v uv &>/dev/null; then
     log "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="${HOME}/.local/bin:${PATH:-}"
+    # Source the env file the installer creates (sets PATH correctly).
+    # Installers write to ~/.local/bin (env file) or ~/.cargo/bin depending on distro.
+    if [ -f "${HOME}/.local/bin/env" ]; then
+        # shellcheck source=/dev/null
+        source "${HOME}/.local/bin/env"
+    else
+        export PATH="${HOME}/.cargo/bin:${HOME}/.local/bin:${PATH:-}"
+    fi
+    # Hard-fail early if uv is still not reachable after install
+    if ! command -v uv &>/dev/null; then
+        err "uv was installed but is still not on PATH. Add ~/.cargo/bin or ~/.local/bin to PATH and re-run."
+    fi
 fi
 log "uv version: $(uv --version)"
 
@@ -185,13 +207,13 @@ DATA_PREFIX="${DATA_PREFIX:-data}"
 
 # QLoRA
 BITS="${BITS:-4}"
-LORA_RANK="${LORA_RANK:-32}"
-LORA_ALPHA="${LORA_ALPHA:-64}"
+LORA_RANK="${LORA_RANK:-64}"
+LORA_ALPHA="${LORA_ALPHA:-128}"
 LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
 
-# Batch
-BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-4}"
-GRAD_ACCUM="${GRAD_ACCUM:-4}"
+# Batch (Optimized for 24 GB VRAM — effective batch = 1 * 16 = 16)
+BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-1}"
+GRAD_ACCUM="${GRAD_ACCUM:-16}"
 NUM_DEVICES="${NUM_DEVICES:-1}"
 GLOBAL_BATCH_SIZE=$((BATCH_PER_DEVICE * GRAD_ACCUM * NUM_DEVICES))
 
@@ -204,11 +226,17 @@ WARMUP_STEPS="${WARMUP_STEPS:-10}"
 LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 NUM_EPOCHS="${NUM_EPOCHS:-2}"
 
-# Video
-NFRAMES="${NFRAMES:-60}"
+# Per-stage epochs (override NUM_EPOCHS for each stage independently).
+# The video dataset (~216 samples) is much smaller than clips (~4,500),
+# so it needs more epochs to avoid undertraining.
+NUM_EPOCHS_CLIP="${NUM_EPOCHS_CLIP:-$NUM_EPOCHS}"    # default: 2
+NUM_EPOCHS_VIDEO="${NUM_EPOCHS_VIDEO:-5}"             # default: 5 (more passes over small video set)
+
+# Video (Optimized for 24 GB VRAM — 100 frames across ~12 min videos)
+NFRAMES="${NFRAMES:-100}"
 FPS="${FPS:-}"            # leave empty to use NFRAMES; set to override
-VIDEO_MIN_PIXELS="${VIDEO_MIN_PIXELS:-$((128 * 32 * 32))}"   # 131072
-VIDEO_MAX_PIXELS="${VIDEO_MAX_PIXELS:-$((256 * 32 * 32))}"   # 262144
+VIDEO_MIN_PIXELS="${VIDEO_MIN_PIXELS:-$((96 * 32 * 32))}"    # 98304
+VIDEO_MAX_PIXELS="${VIDEO_MAX_PIXELS:-$((192 * 32 * 32))}"  # 196608
 
 # Attention
 DISABLE_FLASH_ATTN2="${DISABLE_FLASH_ATTN2:-0}"
@@ -234,7 +262,7 @@ log "  MODEL_ID=$MODEL_ID"
 log "  BITS=$BITS  LORA_RANK=$LORA_RANK  LORA_ALPHA=$LORA_ALPHA"
 log "  BATCH=$BATCH_PER_DEVICE  GRAD_ACCUM=$GRAD_ACCUM  GLOBAL_BS=$GLOBAL_BATCH_SIZE"
 log "  LR=$LR  VISION_LR=$VISION_LR  MERGER_LR=$MERGER_LR"
-log "  EPOCHS=$NUM_EPOCHS  NFRAMES=$NFRAMES  FPS=${FPS:-unset}"
+log "  EPOCHS: clip=$NUM_EPOCHS_CLIP  video=$NUM_EPOCHS_VIDEO  NFRAMES=$NFRAMES  FPS=${FPS:-unset}"
 log "  VIDEO_MIN=$VIDEO_MIN_PIXELS  VIDEO_MAX=$VIDEO_MAX_PIXELS"
 log "  SUBSET_RATIO=$SUBSET_RATIO"
 
@@ -372,7 +400,8 @@ else
         --data_path "$TRAIN_CLIP_DATA" \
         --eval_path "$VAL_CLIP_DATA" \
         --output_dir "$SFT_CLIP_OUT" \
-        "${COMMON_ARGS[@]}" 2>&1 | sed "s/^/[SFT-clip] /"
+        "${COMMON_ARGS[@]}" \
+        --num_train_epochs "$NUM_EPOCHS_CLIP"
 fi
 log "Stage 1 (clips) complete."
 
@@ -411,7 +440,8 @@ else
         --data_path "$TRAIN_VIDEO_DATA" \
         --eval_path "$VAL_VIDEO_DATA" \
         --output_dir "$SFT_VIDEO_OUT" \
-        "${COMMON_ARGS[@]}" 2>&1 | sed "s/^/[SFT-video] /"
+        "${COMMON_ARGS[@]}" \
+        --num_train_epochs "$NUM_EPOCHS_VIDEO"
 fi
 log "Stage 2 (full videos) complete."
 
@@ -445,4 +475,39 @@ log "=========================================="
 if [ "$SUBSET_RATIO" != "1.0" ] && [ "$SUBSET_RATIO" != "1" ]; then
     log "NOTE: Trained on SUBSET_RATIO=${SUBSET_RATIO} of the data."
     log "      For full training, re-run with SUBSET_RATIO=1.0"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# 9. UPLOAD to HuggingFace Hub (optional — set HF_UPLOAD_ENABLED=1)
+# ════════════════════════════════════════════════════════════════════════════
+HF_UPLOAD_ENABLED="${HF_UPLOAD_ENABLED:-0}"
+
+if [ "$HF_UPLOAD_ENABLED" = "1" ]; then
+    log "=== 9. Uploading final SFT model to HuggingFace Hub ==="
+
+    # HF_HUB_REPO and HF_TOKEN must be set (as env vars or exported before calling this script)
+    if [ -z "${HF_HUB_REPO:-}" ]; then
+        err "HF_UPLOAD_ENABLED=1 but HF_HUB_REPO is not set. Example: HF_HUB_REPO=username/my-model"
+    fi
+    if [ -z "${HF_TOKEN:-}" ]; then
+        err "HF_UPLOAD_ENABLED=1 but HF_TOKEN is not set. Example: HF_TOKEN=hf_xxxx"
+    fi
+
+    log "  Source:  $SFT_VIDEO_MERGED"
+    log "  Target:  $HF_HUB_REPO"
+    [ "${HF_PRIVATE:-0}" = "1" ] && log "  Visibility: private" || log "  Visibility: public"
+
+    HF_COMMIT_MSG="${HF_COMMIT_MSG:-Upload Qwen3-VL-2B cataract-surgery SFT ($(date -u +%Y-%m-%d))}"
+
+    $VENV_PYTHON src/upload_to_hub.py \
+        --local-dir "$SFT_VIDEO_MERGED" \
+        --repo-id   "$HF_HUB_REPO" \
+        --token     "$HF_TOKEN" \
+        --commit-message "$HF_COMMIT_MSG" \
+        ${HF_PRIVATE:+--private}
+
+    log "Upload complete! Model is at: https://huggingface.co/$HF_HUB_REPO"
+else
+    log "Skipping HuggingFace Hub upload (set HF_UPLOAD_ENABLED=1 to enable)."
+    log "  To upload manually:  python src/upload_to_hub.py --local-dir $SFT_VIDEO_MERGED --repo-id your-username/my-model"
 fi

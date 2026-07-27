@@ -18,7 +18,9 @@ cd "$SCRIPT_DIR"
 if [ ! -f ".venv/bin/python" ]; then
     err ".venv not found — run ./setup.sh first"
 fi
-export HF_TOKEN=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
+# HF_TOKEN is read from the environment — do NOT hardcode it here.
+# Export it before running: export HF_TOKEN=hf_xxxx
+[ -n "${HF_TOKEN:-}" ] && export HF_TOKEN
 export PYTHONPATH="src:${PYTHONPATH:-}"
 export HF_HOME="$SCRIPT_DIR/hf_cache"
 
@@ -119,7 +121,7 @@ SFT_CLIP_OUT="$OUTPUT_ROOT/sft_clip_lora"
     --model_id "$MODEL_ID" \
     --data_path "$TINY_DATA/sft_train_clip.json" \
     --output_dir "$SFT_CLIP_OUT" \
-    "${COMMON_ARGS[@]}" 2>&1 | sed "s/^/[SFT-clip] /"
+    "${COMMON_ARGS[@]}"
 log "Stage 1 complete."
 
 # ── 5. MERGE clip LoRA ─────────────────────────────────────────────────────
@@ -141,7 +143,7 @@ SFT_VIDEO_OUT="$OUTPUT_ROOT/sft_video_lora"
     --model_id "$SFT_CLIP_MERGED" \
     --data_path "$TINY_DATA/sft_train_video.json" \
     --output_dir "$SFT_VIDEO_OUT" \
-    "${COMMON_ARGS[@]}" 2>&1 | sed "s/^/[SFT-video] /"
+    "${COMMON_ARGS[@]}"
 log "Stage 2 complete."
 
 # ── 7. MERGE video LoRA ────────────────────────────────────────────────────

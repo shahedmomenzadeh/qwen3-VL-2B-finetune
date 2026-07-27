@@ -1,19 +1,56 @@
-from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModelOutputWithPast
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModelOutputWithPast
-from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ModelOutputWithPast
-from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeModelOutputWithPast
-from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModelOutputWithPast
-from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeModelOutputWithPast
 import torch
 from typing import Optional, List, Union, Tuple
-import transformers.models.qwen2_vl.modeling_qwen2_vl
-import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl
-import transformers.models.qwen3_5.modeling_qwen3_5
-import transformers.models.qwen3_5_moe.modeling_qwen3_5_moe
-import transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe
 from transformers.utils import TransformersKwargs
 from transformers.processing_utils import Unpack
 from transformers.cache_utils import Cache
+
+# Per-model-family imports, individually guarded so that a missing or
+# older transformers version doesn't crash at import time for model types
+# that aren't being used in the current training run.
+
+try:
+    import transformers.models.qwen2_vl.modeling_qwen2_vl
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModelOutputWithPast
+    _QWEN2_VL_AVAILABLE = True
+except ImportError:
+    _QWEN2_VL_AVAILABLE = False
+
+try:
+    import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModelOutputWithPast
+    _QWEN2_5_VL_AVAILABLE = True
+except ImportError:
+    _QWEN2_5_VL_AVAILABLE = False
+
+try:
+    import transformers.models.qwen3_5.modeling_qwen3_5
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ModelOutputWithPast
+    _QWEN3_5_AVAILABLE = True
+except ImportError:
+    _QWEN3_5_AVAILABLE = False
+
+try:
+    import transformers.models.qwen3_5_moe.modeling_qwen3_5_moe
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeModelOutputWithPast
+    _QWEN3_5_MOE_AVAILABLE = True
+except ImportError:
+    _QWEN3_5_MOE_AVAILABLE = False
+
+try:
+    import transformers.models.qwen3_vl.modeling_qwen3_vl
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModelOutputWithPast
+    _QWEN3_VL_AVAILABLE = True
+except ImportError:
+    _QWEN3_VL_AVAILABLE = False
+
+try:
+    import transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeModelOutputWithPast
+    _QWEN3_VL_MOE_AVAILABLE = True
+except ImportError:
+    _QWEN3_VL_MOE_AVAILABLE = False
+
+
 
 
 def _flatten_vision_features(vision_outputs):
@@ -65,21 +102,47 @@ def _expand_video_grid_to_frames(video_grid_thw):
 
 
 def replace_qwen_2_with_mixed_modality_forward():
+    if not _QWEN2_VL_AVAILABLE:
+        raise ImportError(
+            "transformers.models.qwen2_vl is not available in the installed transformers version."
+        )
     transformers.models.qwen2_vl.modeling_qwen2_vl.Qwen2VLModel.forward = qwen2_mixed_modality_forward
 
 def replace_qwen2_5_with_mixed_modality_forward():
+    if not _QWEN2_5_VL_AVAILABLE:
+        raise ImportError(
+            "transformers.models.qwen2_5_vl is not available in the installed transformers version."
+        )
     transformers.models.qwen2_5_vl.modeling_qwen2_5_vl.Qwen2_5_VLModel.forward = qwen2_5_mixed_modality_forward
 
 def replace_qwen3_with_mixed_modality_forward():
+    if not _QWEN3_VL_AVAILABLE:
+        raise ImportError(
+            "transformers.models.qwen3_vl is not available in the installed transformers version. "
+            "Install transformers>=5.0.0 or from GitHub main: "
+            "pip install git+https://github.com/huggingface/transformers.git"
+        )
     transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLModel.forward = qwen3_vl_mixed_modality_forward
 
 def replace_qwen3_5_with_mixed_modality_forward():
+    if not _QWEN3_5_AVAILABLE:
+        raise ImportError(
+            "transformers.models.qwen3_5 is not available in the installed transformers version."
+        )
     transformers.models.qwen3_5.modeling_qwen3_5.Qwen3_5Model.forward = qwen3_5_mixed_modality_forward
 
 def replace_qwen3_5_moe_with_mixed_modality_forward():
+    if not _QWEN3_5_MOE_AVAILABLE:
+        raise ImportError(
+            "transformers.models.qwen3_5_moe is not available in the installed transformers version."
+        )
     transformers.models.qwen3_5_moe.modeling_qwen3_5_moe.Qwen3_5MoeModel.forward = qwen3_5_moe_mixed_modality_forward
 
 def replace_qwen3_vl_moe_with_mixed_modality_forward():
+    if not _QWEN3_VL_MOE_AVAILABLE:
+        raise ImportError(
+            "transformers.models.qwen3_vl_moe is not available in the installed transformers version."
+        )
     transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe.Qwen3VLMoeModel.forward = qwen3_vl_moe_mixed_modality_forward
 
 
