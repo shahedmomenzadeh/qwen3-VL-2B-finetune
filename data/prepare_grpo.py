@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Convert cataract surgery dataset (OpenAI chat format JSONL) to GRPO format JSON.
+Convert clip-level cataract surgery records to GRPO format JSON.
 
 Usage:
-    python data/prepare_grpo.py --input-dir dataset/Train --output data/grpo_train_clip.json --split train --data-type clip
-    python data/prepare_grpo.py --input-dir dataset/Train --output data/grpo_train_video.json --split train --data-type full_video
+    python data/prepare_grpo.py --input-dir dataset_grpo/Train --output data/grpo_train_dataset_grpo.json --split train --data-type all
 """
 import argparse
 import json
@@ -14,17 +13,21 @@ from collections import Counter
 
 
 def collect_grpo_jsonl_files(input_dir, data_type="all"):
-    """Collect GRPO JSONL files from clip and/or full-video files."""
+    """Collect YouTube MCQ and phase-task GRPO JSONL files.
+
+    The separated GRPO dataset contains two clip-level sources:
+    ``clip_*_grpo.jsonl`` for YouTube MCQs and
+    ``grpo_*_<task>_grpo.jsonl`` for phase tasks.  Full-video narration is
+    SFT-only, so no full-video GRPO files are collected here.
+    """
+    if data_type not in {"all", "clip", "phase"}:
+        raise ValueError("GRPO data type must be one of: all, clip, phase")
+
     files = []
-
     if data_type in {"all", "clip"}:
-        clip_pattern = os.path.join(input_dir, "*", "clip_*_grpo.jsonl")
-        files.extend(glob.glob(clip_pattern))
-
-    if data_type in {"all", "full_video"}:
-        full_video_pattern = os.path.join(input_dir, "*", "full_video_grpo.jsonl")
-        files.extend(glob.glob(full_video_pattern))
-
+        files.extend(glob.glob(os.path.join(input_dir, "*", "clip_*_grpo.jsonl")))
+    if data_type in {"all", "phase"}:
+        files.extend(glob.glob(os.path.join(input_dir, "*", "grpo_*_grpo.jsonl")))
     return sorted(files)
 
 
@@ -35,7 +38,6 @@ def process_grpo_file(jsonl_path, input_dir):
     basename = os.path.basename(jsonl_path)
     file_stem = os.path.splitext(basename)[0]
     parent_split = os.path.basename(input_dir)
-    is_full_video = basename.startswith("full_video")
 
     with open(jsonl_path, "r", encoding="utf-8") as f:
         for line_idx, line in enumerate(f):
@@ -79,8 +81,7 @@ def process_grpo_file(jsonl_path, input_dir):
                 {"from": "gpt", "value": ""},
             ]
 
-            prefix = "full_" if is_full_video else ""
-            sample_id = f"grpo_{prefix}{video_id_dir}_{file_stem}_{line_idx}"
+            sample_id = f"grpo_{video_id_dir}_{file_stem}_{line_idx}"
 
             sample = {
                 "id": sample_id,
@@ -94,19 +95,26 @@ def process_grpo_file(jsonl_path, input_dir):
 
             samples.append(sample)
 
+    expected_samples = 1 if basename.startswith("grpo_") or video_id_dir.startswith("PH_") else 3
+    if len(samples) != expected_samples:
+        print(
+            f"Warning: {jsonl_path} contains {len(samples)} samples; "
+            f"expected {expected_samples} for this dataset source"
+        )
+
     return samples
 
 
 def main():
     parser = argparse.ArgumentParser(description="Prepare GRPO dataset from cataract JSONL files")
     parser.add_argument("--input-dir", type=str, required=True,
-                        help="Path to split directory (e.g., dataset/Train)")
+                        help="Path to split directory (e.g., dataset_grpo/Train)")
     parser.add_argument("--output", type=str, required=True,
                         help="Output JSON file path")
     parser.add_argument("--split", type=str, default="train",
                         help="Dataset split name (train/val/test)")
-    parser.add_argument("--data-type", choices=["all", "clip", "full_video"], default="all",
-                        help="Which GRPO files to convert: clip-only, full-video-only, or all")
+    parser.add_argument("--data-type", choices=["all", "clip", "phase"], default="all",
+                        help="GRPO source: YouTube clip MCQs, phase tasks, or both")
 
     args = parser.parse_args()
 

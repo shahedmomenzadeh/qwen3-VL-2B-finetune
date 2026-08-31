@@ -1,56 +1,19 @@
+from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModelOutputWithPast
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModelOutputWithPast
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ModelOutputWithPast
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeModelOutputWithPast
+from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModelOutputWithPast
+from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeModelOutputWithPast
 import torch
 from typing import Optional, List, Union, Tuple
+import transformers.models.qwen2_vl.modeling_qwen2_vl
+import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl
+import transformers.models.qwen3_5.modeling_qwen3_5
+import transformers.models.qwen3_5_moe.modeling_qwen3_5_moe
+import transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe
 from transformers.utils import TransformersKwargs
 from transformers.processing_utils import Unpack
 from transformers.cache_utils import Cache
-
-# Per-model-family imports, individually guarded so that a missing or
-# older transformers version doesn't crash at import time for model types
-# that aren't being used in the current training run.
-
-try:
-    import transformers.models.qwen2_vl.modeling_qwen2_vl
-    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModelOutputWithPast
-    _QWEN2_VL_AVAILABLE = True
-except ImportError:
-    _QWEN2_VL_AVAILABLE = False
-
-try:
-    import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl
-    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModelOutputWithPast
-    _QWEN2_5_VL_AVAILABLE = True
-except ImportError:
-    _QWEN2_5_VL_AVAILABLE = False
-
-try:
-    import transformers.models.qwen3_5.modeling_qwen3_5
-    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ModelOutputWithPast
-    _QWEN3_5_AVAILABLE = True
-except ImportError:
-    _QWEN3_5_AVAILABLE = False
-
-try:
-    import transformers.models.qwen3_5_moe.modeling_qwen3_5_moe
-    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeModelOutputWithPast
-    _QWEN3_5_MOE_AVAILABLE = True
-except ImportError:
-    _QWEN3_5_MOE_AVAILABLE = False
-
-try:
-    import transformers.models.qwen3_vl.modeling_qwen3_vl
-    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModelOutputWithPast
-    _QWEN3_VL_AVAILABLE = True
-except ImportError:
-    _QWEN3_VL_AVAILABLE = False
-
-try:
-    import transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe
-    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeModelOutputWithPast
-    _QWEN3_VL_MOE_AVAILABLE = True
-except ImportError:
-    _QWEN3_VL_MOE_AVAILABLE = False
-
-
 
 
 def _flatten_vision_features(vision_outputs):
@@ -102,47 +65,21 @@ def _expand_video_grid_to_frames(video_grid_thw):
 
 
 def replace_qwen_2_with_mixed_modality_forward():
-    if not _QWEN2_VL_AVAILABLE:
-        raise ImportError(
-            "transformers.models.qwen2_vl is not available in the installed transformers version."
-        )
     transformers.models.qwen2_vl.modeling_qwen2_vl.Qwen2VLModel.forward = qwen2_mixed_modality_forward
 
 def replace_qwen2_5_with_mixed_modality_forward():
-    if not _QWEN2_5_VL_AVAILABLE:
-        raise ImportError(
-            "transformers.models.qwen2_5_vl is not available in the installed transformers version."
-        )
     transformers.models.qwen2_5_vl.modeling_qwen2_5_vl.Qwen2_5_VLModel.forward = qwen2_5_mixed_modality_forward
 
 def replace_qwen3_with_mixed_modality_forward():
-    if not _QWEN3_VL_AVAILABLE:
-        raise ImportError(
-            "transformers.models.qwen3_vl is not available in the installed transformers version. "
-            "Install transformers>=5.0.0 or from GitHub main: "
-            "pip install git+https://github.com/huggingface/transformers.git"
-        )
     transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLModel.forward = qwen3_vl_mixed_modality_forward
 
 def replace_qwen3_5_with_mixed_modality_forward():
-    if not _QWEN3_5_AVAILABLE:
-        raise ImportError(
-            "transformers.models.qwen3_5 is not available in the installed transformers version."
-        )
     transformers.models.qwen3_5.modeling_qwen3_5.Qwen3_5Model.forward = qwen3_5_mixed_modality_forward
 
 def replace_qwen3_5_moe_with_mixed_modality_forward():
-    if not _QWEN3_5_MOE_AVAILABLE:
-        raise ImportError(
-            "transformers.models.qwen3_5_moe is not available in the installed transformers version."
-        )
     transformers.models.qwen3_5_moe.modeling_qwen3_5_moe.Qwen3_5MoeModel.forward = qwen3_5_moe_mixed_modality_forward
 
 def replace_qwen3_vl_moe_with_mixed_modality_forward():
-    if not _QWEN3_VL_MOE_AVAILABLE:
-        raise ImportError(
-            "transformers.models.qwen3_vl_moe is not available in the installed transformers version."
-        )
     transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe.Qwen3VLMoeModel.forward = qwen3_vl_moe_mixed_modality_forward
 
 
@@ -284,7 +221,6 @@ def qwen3_5_moe_mixed_modality_forward(
         **kwargs,
     )
 
-
 def qwen3_vl_moe_mixed_modality_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -301,7 +237,7 @@ def qwen3_vl_moe_mixed_modality_forward(
     second_per_grid_ts: Optional[torch.Tensor] = None,
     **kwargs: Unpack[TransformersKwargs],
 ) -> Union[tuple, Qwen3VLMoeModelOutputWithPast]:
-
+    
     if (input_ids is None) ^ (inputs_embeds is not None):
         raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -310,14 +246,14 @@ def qwen3_vl_moe_mixed_modality_forward(
 
     image_mask = None
     video_mask = None
-
+    
     if pixel_values is None and pixel_values_videos is None:
         dummy_pixel, dummy_grid = _make_dummy_qwen3_visual_inputs(self.visual)
 
         image_outputs = self.get_image_features(dummy_pixel, dummy_grid, return_dict=True)
         dummy_deepstack = _get_deepstack_features(image_outputs)
         image_embeds = _flatten_vision_features(image_outputs).to(inputs_embeds.device, inputs_embeds.dtype)
-
+        
         inputs_embeds += image_embeds.mean() * 0
 
     if pixel_values is not None:
@@ -341,6 +277,7 @@ def qwen3_vl_moe_mixed_modality_forward(
     visual_pos_masks = None
     deepstack_visual_embeds = None
     if image_mask is not None and video_mask is not None:
+        # aggregate visual_pos_masks and deepstack_visual_embeds
         image_mask = image_mask[..., 0]
         video_mask = video_mask[..., 0]
         visual_pos_masks = image_mask | video_mask
@@ -414,7 +351,12 @@ def qwen3_vl_mixed_modality_forward(
     second_per_grid_ts: Optional[torch.Tensor] = None,
     **kwargs: Unpack[TransformersKwargs],
 ) -> Union[tuple, Qwen3VLModelOutputWithPast]:
-
+    r"""
+    image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
+        The temporal, height and width of feature shape of each image in LLM.
+    video_grid_thw (`torch.LongTensor` of shape `(num_videos, 3)`, *optional*):
+        The temporal, height and width of feature shape of each video in LLM.
+    """
     if (input_ids is None) ^ (inputs_embeds is not None):
         raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -430,7 +372,7 @@ def qwen3_vl_mixed_modality_forward(
         image_outputs = self.get_image_features(dummy_pixel, dummy_grid, return_dict=True)
         dummy_deepstack = _get_deepstack_features(image_outputs)
         image_embeds = _flatten_vision_features(image_outputs).to(inputs_embeds.device, inputs_embeds.dtype)
-
+        
         inputs_embeds += image_embeds.mean() * 0
 
     if pixel_values is not None:
@@ -454,6 +396,7 @@ def qwen3_vl_mixed_modality_forward(
     visual_pos_masks = None
     deepstack_visual_embeds = None
     if image_mask is not None and video_mask is not None:
+        # aggregate visual_pos_masks and deepstack_visual_embeds
         image_mask = image_mask[..., 0]
         video_mask = video_mask[..., 0]
         visual_pos_masks = image_mask | video_mask
@@ -510,7 +453,6 @@ def qwen3_vl_mixed_modality_forward(
         rope_deltas=self.rope_deltas,
     )
 
-
 def qwen2_5_mixed_modality_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -532,6 +474,16 @@ def qwen2_5_mixed_modality_forward(
     second_per_grid_ts: Optional[torch.Tensor] = None,
     **kwargs: Unpack[TransformersKwargs],
 ) -> Union[tuple, Qwen2_5_VLModelOutputWithPast]:
+    r"""
+    image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
+        The temporal, height and width of feature shape of each image in LLM.
+    video_grid_thw (`torch.LongTensor` of shape `(num_videos, 3)`, *optional*):
+        The temporal, height and width of feature shape of each video in LLM.
+    rope_deltas (`torch.LongTensor` of shape `(batch_size, )`, *optional*):
+        The rope index difference between sequence length and multimodal rope.
+    second_per_grid_ts (`torch.Tensor` of shape `(num_videos)`, *optional*):
+        The time interval (in seconds) for each grid along the temporal dimension in the 3D position IDs.
+    """
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
@@ -543,10 +495,14 @@ def qwen2_5_mixed_modality_forward(
         inputs_embeds = self.get_input_embeddings()(input_ids)
 
     if pixel_values is None and pixel_values_videos is None:
+        # Create dummy pixel_values and grid_thw for avoiding deepspeed error.
         dummy_pixel = torch.zeros(784, 1176).to(self.visual.device)
         dummy_grid = torch.tensor([[1, 28, 28]]).to(self.visual.device)
 
         image_embeds = self.get_image_features(dummy_pixel, dummy_grid, return_dict=True)
+        # Operates as maksed_scatter for the image tokens
+        # However the values are all zeros so it dosen't affect the embeddings.
+        # This could avoid deepspeed error when some batch only has texts.
         image_embeds = _flatten_vision_features(image_embeds)
         inputs_embeds += image_embeds.mean() * 0
 
@@ -623,6 +579,14 @@ def qwen2_mixed_modality_forward(
     second_per_grid_ts: Optional[torch.Tensor] = None,
     **kwargs: Unpack[TransformersKwargs],
 ) -> Union[tuple, Qwen2VLModelOutputWithPast]:
+    r"""
+    image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
+        The temporal, height and width of feature shape of each image in LLM.
+    video_grid_thw (`torch.LongTensor` of shape `(num_videos, 3)`, *optional*):
+        The temporal, height and width of feature shape of each video in LLM.
+    rope_deltas (`torch.LongTensor` of shape `(batch_size, )`, *optional*):
+        The rope index difference between sequence length and multimodal rope.
+    """
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
@@ -634,10 +598,14 @@ def qwen2_mixed_modality_forward(
         inputs_embeds = self.get_input_embeddings()(input_ids)
 
     if pixel_values is None and pixel_values_videos is None:
+        # Create dummy pixel_values and grid_thw for avoiding deepspeed error.
         dummy_pixel = torch.zeros(784, 1176).to(self.visual.get_device())
         dummy_grid = torch.tensor([[1, 28, 28]]).to(self.visual.get_device())
 
         image_embeds = self.get_image_features(dummy_pixel, dummy_grid, return_dict=True)
+        # Operates as maksed_scatter for the image tokens
+        # However the values are all zeros so it dosen't affect the embeddings.
+        # This could avoid deepspeed error when some batch only has texts.
         image_embeds = _flatten_vision_features(image_embeds)
         inputs_embeds += image_embeds.mean() * 0
 

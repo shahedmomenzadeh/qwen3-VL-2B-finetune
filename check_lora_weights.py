@@ -11,7 +11,7 @@ import sys
 import os
 import torch
 
-checkpoint_dir = sys.argv[1] if len(sys.argv) > 1 else "output/tiny_sft_test/sft_clip_lora"
+checkpoint_dir = sys.argv[1] if len(sys.argv) > 1 else "output/tiny_sft_test/sft_lora"
 
 print(f"Checking LoRA checkpoint: {checkpoint_dir}\n")
 

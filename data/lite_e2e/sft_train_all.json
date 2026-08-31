@@ -1,0 +1,128 @@
+[
+  {
+    "id": "MruUgO5HFZI_clip_01_sft_0",
+    "video": "Train/MruUgO5HFZI/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nDescribe what is happening in this cataract surgical video clip."
+      },
+      {
+        "from": "gpt",
+        "value": "A cannula is introduced into the anterior chamber to inject a blue-tinted ophthalmic viscosurgical device (OVD). The OVD deepens and stabilizes the anterior chamber, preparing it for subsequent manipulation of the intraocular lens."
+      }
+    ]
+  },
+  {
+    "id": "MruUgO5HFZI_clip_01_sft_1",
+    "video": "Train/MruUgO5HFZI/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich surgical step is currently being performed in this video clip?\nA) Hydrodissection\nB) Viscoelastic injection\nC) Capsulorhexis\nD) IOL explantation\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "In the video, a cannula is inserted into the anterior chamber to deliver a substance that expands and stabilizes the space between the cornea and the iris, which is the procedure for viscoelastic injection. Therefore the answer is B) Viscoelastic injection."
+      }
+    ]
+  },
+  {
+    "id": "MruUgO5HFZI_clip_01_sft_2",
+    "video": "Train/MruUgO5HFZI/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat visual change occurs in the anterior chamber as the substance is injected?\nA) The chamber collapses and becomes shallow\nB) The chamber deepens and a blue-tinted fluid becomes visible\nC) The chamber fills with air bubbles and blood\nD) The iris begins to constrict rapidly\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "As the surgeon operates, you can see a blue-tinted ophthalmic viscosurgical device filling the eye, which causes the anterior chamber to visibly deepen and stabilize. Therefore the answer is B) The chamber deepens and a blue-tinted fluid becomes visible."
+      }
+    ]
+  },
+  {
+    "id": "MruUgO5HFZI_clip_01_sft_3",
+    "video": "Train/MruUgO5HFZI/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat instrument is the surgeon using to manipulate the anterior chamber in this clip?\nA) Viscoelastic cannula\nB) Phaco tip\nC) Capsulorhexis forceps\nD) Diamond keratome\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The surgeon is using a thin, blunt-ended tube, specifically a viscoelastic cannula, to precisely inject the blue OVD into the space behind the cornea. Therefore the answer is A) Viscoelastic cannula."
+      }
+    ]
+  },
+  {
+    "id": "MruUgO5HFZI_clip_02_sft_0",
+    "video": "Train/MruUgO5HFZI/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nDescribe what is happening in this cataract surgical video clip."
+      },
+      {
+        "from": "gpt",
+        "value": "A gonioscopy lens is placed on the cornea, providing a clear view of the anterior chamber angle. A manipulating instrument, described as a collar button, is inserted. The instrument engages the haptic of the anterior chamber lens that is tucked behind the iris. The haptic is carefully manipulated out from behind the iris and repositioned correctly within the anterior chamber angle, resolving the iris tuck."
+      }
+    ]
+  },
+  {
+    "id": "MruUgO5HFZI_clip_02_sft_1",
+    "video": "Train/MruUgO5HFZI/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich surgical procedure is being demonstrated in this video sequence?\nA) Primary cataract extraction\nB) IOL positioning and iris tuck management\nC) Pars plana vitrectomy\nD) Descemet's membrane endothelial keratoplasty\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The surgeon is seen using an instrument to manipulate the haptic of an anterior chamber intraocular lens that was improperly tucked behind the iris, repositioning it correctly into the anterior chamber angle. Therefore the answer is B) IOL positioning and iris tuck management."
+      }
+    ]
+  },
+  {
+    "id": "MruUgO5HFZI_clip_02_sft_2",
+    "video": "Train/MruUgO5HFZI/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat technique is used to ensure the surgeon has a clear view of the anterior chamber angle during the manipulation?\nA) Direct visualization through the operating microscope alone\nB) The application of a gonioscopy lens to the cornea\nC) Indirect ophthalmoscopy\nD) Retroillumination from the red reflex\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "In the video, a gonioscopy lens is placed directly on the corneal surface, which provides the necessary visualization of the peripheral anterior chamber angle to safely manage the tucked haptic. Therefore the answer is B) The application of a gonioscopy lens to the cornea."
+      }
+    ]
+  },
+  {
+    "id": "MruUgO5HFZI_clip_02_sft_3",
+    "video": "Train/MruUgO5HFZI/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich specific tool is being used on the surface of the eye to assist with visualization of the internal structures?\nA) Lid speculum\nB) Forceps\nC) Gonioscopy lens\nD) Phacoemulsification handpiece\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The video shows a gonioscopy lens being held against the eye, which allows the surgeon to see into the angle of the anterior chamber where the IOL haptic is located. Therefore the answer is C) Gonioscopy lens."
+      }
+    ]
+  },
+  {
+    "id": "full_MruUgO5HFZI_full_video_sft_0",
+    "video": "Train/MruUgO5HFZI/full_video.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nProvide a detailed timestamped narration of this surgical procedure."
+      },
+      {
+        "from": "gpt",
+        "value": "[00:17 - 00:23] viscoelastic injection: A cannula is introduced into the anterior chamber to inject a blue-tinted ophthalmic viscosurgical device (OVD). The OVD deepens and stabilizes the anterior chamber, preparing it for subsequent manipulation of the intraocular lens.\n[00:23 - 00:52] iol positioning: A gonioscopy lens is placed on the cornea, providing a clear view of the anterior chamber angle. A manipulating instrument, described as a collar button, is inserted. The instrument engages the haptic of the anterior chamber lens that is tucked behind the iris. The haptic is carefully manipulated out from behind the iris and repositioned correctly within the anterior chamber angle, resolving the iris tuck."
+      }
+    ]
+  }
+]

@@ -3,8 +3,7 @@
 # Target: Qwen/Qwen3-VL-2B-Instruct
 # Dataset: Cataract surgery video clips
 
-# Phase 1 (clip SFT): starts from base HuggingFace model
-# Phase 2 (video SFT): starts from merged Phase 1 checkpoint
+# Single SFT stage: clips + full videos combined, starting from the base HuggingFace model
 MODEL_NAME=${MODEL_NAME:-"Qwen/Qwen3-VL-2B-Instruct"}
 
 export PYTHONPATH=src:${PYTHONPATH:-}
@@ -19,11 +18,11 @@ BATCH_PER_DEVICE=${BATCH_PER_DEVICE:-2}
 NUM_DEVICES=${NUM_DEVICES:-1}
 GRAD_ACCUM_STEPS=$((GLOBAL_BATCH_SIZE / (BATCH_PER_DEVICE * NUM_DEVICES)))
 
-DATA_PATH=${DATA_PATH:-"data/sft_train_clip.json"}
-EVAL_PATH=${EVAL_PATH:-"data/sft_val_clip.json"}
-# Image folder is the dataset root (videos referenced as relative paths like "YT_ID/clip.mp4")
-IMAGE_FOLDER=${IMAGE_FOLDER:-"dataset"}
-OUTPUT_DIR=${OUTPUT_DIR:-"output/sft_clip_lora"}
+DATA_PATH=${DATA_PATH:-"data/sft_train_dataset_sft.json"}
+EVAL_PATH=${EVAL_PATH:-"data/sft_val_dataset_sft.json"}
+# Image folder is the separated SFT dataset root (prepared paths include Train/ or Validation/)
+IMAGE_FOLDER=${IMAGE_FOLDER:-"dataset_sft"}
+OUTPUT_DIR=${OUTPUT_DIR:-"output/sft_lora"}
 NUM_EPOCHS=${NUM_EPOCHS:-2}
 LEARNING_RATE=${LEARNING_RATE:-1e-4}
 VISION_LR=${VISION_LR:-2e-6}

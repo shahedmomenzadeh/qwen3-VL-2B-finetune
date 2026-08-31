@@ -3,21 +3,15 @@
 #
 # Stages:
 #   1. Environment setup (uv + venv + install deps)
-#   2. Dataset download from Google Drive (if not present)
+#   2. Verify the separated SFT dataset
 #   3. Data preparation (JSONL → LLaVA-format JSON)
 #   4. OPTIONAL: subsample training data via SUBSET_RATIO (0-1)
-#   5. SFT on clips  → merge → output/sft_clip_merged
-#   6. SFT on videos → merge → output/sft_video_merged  (final model)
+#   5. SFT on clips + full videos → merge → output/sft_merged  (final model)
 #
 # Usage:
 #   bash train_sft.sh                          # full training, defaults
 #   SUBSET_RATIO=0.3 bash train_sft.sh         # 30% of training data (test run)
 #   BITS=16 NFRAMES=48 bash train_sft.sh       # 16-bit LoRA (no quantization)
-#
-# ── REQUIRED: fill in Google Drive file IDs below (or set via env vars) ──
-TRAIN_ZIP_ID="${TRAIN_ZIP_ID:-PUT_TRAIN_ZIP_GOOGLE_DRIVE_ID_HERE}"
-VAL_ZIP_ID="${VAL_ZIP_ID:-PUT_VAL_ZIP_GOOGLE_DRIVE_ID_HERE}"
-TEST_ZIP_ID="${TEST_ZIP_ID:-PUT_TEST_ZIP_GOOGLE_DRIVE_ID_HERE}"
 #
 # Also set HF_TOKEN if you need to download the model from HuggingFace:
 #   export HF_TOKEN=hf_xxxxx
@@ -151,50 +145,18 @@ if [ "$ENABLE_GEN_EVAL" = "1" ]; then
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
-# 3. DATASET DOWNLOAD
+# 3. DATASET VERIFICATION
 # ════════════════════════════════════════════════════════════════════════════
 log "=== 2. Dataset Setup ==="
 
-mkdir -p dataset
+SFT_DATASET_ROOT="${SFT_DATASET_ROOT:-dataset_sft}"
 
-# Helper: download + unzip a split from Google Drive if its dir is missing
-download_split() {
-    local split_name="$1"
-    local zip_id="$2"
-    local split_dir="dataset/$split_name"
-
-    if [ -d "$split_dir" ] && [ -n "$(ls -A "$split_dir" 2>/dev/null)" ]; then
-        log "  $split_name/ already exists, skipping download."
-        return
-    fi
-
-    if [ -z "$zip_id" ] || echo "$zip_id" | grep -q "PUT_.*_HERE"; then
-        warn "  $split_name: Google Drive ID not set — skipping download."
-        warn "  Set ${split_name^^}_ZIP_ID and re-run, or populate dataset/$split_name manually."
-        return
-    fi
-
-    log "  Downloading $split_name.zip from Google Drive (ID: $zip_id)..."
-    $VENV_PYTHON -m gdown "$zip_id" --output "$split_name.zip" 2>&1 \
-        || err "gdown failed for $split_name (ID: $zip_id)"
-
-    log "  Extracting $split_name.zip into dataset/..."
-    unzip -o -q "$split_name.zip" -d dataset/ || err "unzip failed for $split_name.zip"
-    rm -f "$split_name.zip"
-    log "  $split_name ready."
-}
-
-download_split "Train"      "$TRAIN_ZIP_ID"
-download_split "Validation" "$VAL_ZIP_ID"
-download_split "Test"        "$TEST_ZIP_ID"
-
-# Verify dataset structure
 for split in Train Validation; do
-    if [ ! -d "dataset/$split" ] || [ -z "$(ls -A "dataset/$split" 2>/dev/null)" ]; then
-        err "dataset/$split/ is empty or missing. Set ${split^^}_ZIP_ID or copy data manually."
+    if [ ! -d "$SFT_DATASET_ROOT/$split" ] || [ -z "$(ls -A "$SFT_DATASET_ROOT/$split" 2>/dev/null)" ]; then
+        err "$SFT_DATASET_ROOT/$split/ is empty or missing. Populate the separated SFT dataset first."
     fi
 done
-log "Dataset verified: dataset/Train/ and dataset/Validation/ present."
+log "SFT dataset verified: $SFT_DATASET_ROOT/Train/ and $SFT_DATASET_ROOT/Validation/ present."
 
 # ════════════════════════════════════════════════════════════════════════════
 # 4. CONFIGURATION (all overridable via env vars)
@@ -226,12 +188,6 @@ WARMUP_STEPS="${WARMUP_STEPS:-10}"
 LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 NUM_EPOCHS="${NUM_EPOCHS:-2}"
 
-# Per-stage epochs (override NUM_EPOCHS for each stage independently).
-# The video dataset (~216 samples) is much smaller than clips (~4,500),
-# so it needs more epochs to avoid undertraining.
-NUM_EPOCHS_CLIP="${NUM_EPOCHS_CLIP:-$NUM_EPOCHS}"    # default: 2
-NUM_EPOCHS_VIDEO="${NUM_EPOCHS_VIDEO:-5}"             # default: 5 (more passes over small video set)
-
 # Video (Optimized for 24 GB VRAM — 100 frames across ~12 min videos)
 NFRAMES="${NFRAMES:-100}"
 FPS="${FPS:-}"            # leave empty to use NFRAMES; set to override
@@ -258,11 +214,19 @@ SUBSET_RATIO="${SUBSET_RATIO:-1.0}"
 # Force regenerate prepared JSONs even if they already exist
 FORCE_REPREPARE="${FORCE_REPREPARE:-0}"
 
+prepared_data_needs_refresh() {
+    local prepared_path="$1"
+    if [ ! -f "$prepared_path" ]; then
+        return 0
+    fi
+    [ -n "$(find "$SFT_DATASET_ROOT/Train" "$SFT_DATASET_ROOT/Validation" -type f -newer "$prepared_path" -print -quit)" ]
+}
+
 log "  MODEL_ID=$MODEL_ID"
 log "  BITS=$BITS  LORA_RANK=$LORA_RANK  LORA_ALPHA=$LORA_ALPHA"
 log "  BATCH=$BATCH_PER_DEVICE  GRAD_ACCUM=$GRAD_ACCUM  GLOBAL_BS=$GLOBAL_BATCH_SIZE"
 log "  LR=$LR  VISION_LR=$VISION_LR  MERGER_LR=$MERGER_LR"
-log "  EPOCHS: clip=$NUM_EPOCHS_CLIP  video=$NUM_EPOCHS_VIDEO  NFRAMES=$NFRAMES  FPS=${FPS:-unset}"
+log "  EPOCHS=$NUM_EPOCHS  NFRAMES=$NFRAMES  FPS=${FPS:-unset}"
 log "  VIDEO_MIN=$VIDEO_MIN_PIXELS  VIDEO_MAX=$VIDEO_MAX_PIXELS"
 log "  SUBSET_RATIO=$SUBSET_RATIO"
 
@@ -272,65 +236,55 @@ log "  SUBSET_RATIO=$SUBSET_RATIO"
 log "=== 4. Data Preparation ==="
 
 NEED_PREPARE=0
-[ "$FORCE_REPREPARE" = "1" ] && NEED_PREPARE=1
-for f in sft_train_clip.json sft_train_video.json sft_val_clip.json sft_val_video.json; do
-    [ ! -f "$DATA_PREFIX/$f" ] && NEED_PREPARE=1
+for f in sft_train_dataset_sft.json sft_val_dataset_sft.json; do
+    if prepared_data_needs_refresh "$DATA_PREFIX/$f"; then
+        NEED_PREPARE=1
+    fi
 done
+[ "$FORCE_REPREPARE" = "1" ] && NEED_PREPARE=1
 
 if [ "$NEED_PREPARE" = "1" ]; then
-    log "Running prepare_sft.py for all splits and data types..."
-    $VENV_PYTHON data/prepare_sft.py --input-dir dataset/Train      --output "$DATA_PREFIX/sft_train_clip.json" --data-type clip
-    $VENV_PYTHON data/prepare_sft.py --input-dir dataset/Train      --output "$DATA_PREFIX/sft_train_video.json" --data-type full_video
-    $VENV_PYTHON data/prepare_sft.py --input-dir dataset/Validation --output "$DATA_PREFIX/sft_val_clip.json"   --data-type clip
-    $VENV_PYTHON data/prepare_sft.py --input-dir dataset/Validation --output "$DATA_PREFIX/sft_val_video.json"   --data-type full_video
+    log "Running prepare_sft.py (clips + full videos combined)..."
+    $VENV_PYTHON data/prepare_sft.py --input-dir "$SFT_DATASET_ROOT/Train"      --output "$DATA_PREFIX/sft_train_dataset_sft.json" --data-type all
+    $VENV_PYTHON data/prepare_sft.py --input-dir "$SFT_DATASET_ROOT/Validation" --output "$DATA_PREFIX/sft_val_dataset_sft.json"   --data-type all
 else
     log "Prepared JSONs already exist (set FORCE_REPREPARE=1 to regenerate)."
 fi
 
-# Apply SUBSET_RATIO to training files (only train, not eval)
+# Apply SUBSET_RATIO to training data (only train, not eval)
 if [ "$SUBSET_RATIO" != "1.0" ] && [ "$SUBSET_RATIO" != "1" ]; then
     log "Subsampling training data to ${SUBSET_RATIO} of original..."
 
     $VENV_PYTHON -c "
-import json, random, os
+import json, random
 random.seed(42)  # reproducible
 
 ratio = float('${SUBSET_RATIO}')
-data_dir = '${DATA_PREFIX}'
+path = '${DATA_PREFIX}/sft_train_dataset_sft.json'
+with open(path) as f:
+    data = json.load(f)
 
-for fname in ['sft_train_clip.json', 'sft_train_video.json']:
-    path = os.path.join(data_dir, fname)
-    if not os.path.exists(path):
-        continue
-    with open(path) as f:
-        data = json.load(f)
+n = max(1, int(len(data) * ratio))
+random.shuffle(data)
+subset = data[:n]
 
-    n = max(1, int(len(data) * ratio))
-    random.shuffle(data)
-    subset = data[:n]
-
-    # Save subset to a separate file so the original is preserved
+# Save subset to a separate file so the original is preserved
     out = path.replace('.json', f'_sub{int(ratio*100)}.json')
-    with open(out, 'w') as f:
-        json.dump(subset, f, ensure_ascii=False, indent=2)
-    print(f'  {fname}: {len(data)} -> {len(subset)} samples -> {out}')
+with open(out, 'w') as f:
+    json.dump(subset, f, ensure_ascii=False, indent=2)
+print(f'  sft_train_dataset_sft.json: {len(data)} -> {len(subset)} samples -> {out}')
 "
-    # Override the train file paths for training
+    # Override the train file path for training
     SUB_SUFFIX="_sub$($VENV_PYTHON -c "print(int(float('${SUBSET_RATIO}')*100))")"
-    TRAIN_CLIP_DATA="$DATA_PREFIX/sft_train_clip${SUB_SUFFIX}.json"
-    TRAIN_VIDEO_DATA="$DATA_PREFIX/sft_train_video${SUB_SUFFIX}.json"
+    TRAIN_DATA="$DATA_PREFIX/sft_train_dataset_sft${SUB_SUFFIX}.json"
 else
-    TRAIN_CLIP_DATA="$DATA_PREFIX/sft_train_clip.json"
-    TRAIN_VIDEO_DATA="$DATA_PREFIX/sft_train_video.json"
+    TRAIN_DATA="$DATA_PREFIX/sft_train_dataset_sft.json"
 fi
 
-VAL_CLIP_DATA="$DATA_PREFIX/sft_val_clip.json"
-VAL_VIDEO_DATA="$DATA_PREFIX/sft_val_video.json"
+VAL_DATA="$DATA_PREFIX/sft_val_dataset_sft.json"
 
-log "  Train clip data:  $TRAIN_CLIP_DATA"
-log "  Train video data: $TRAIN_VIDEO_DATA"
-log "  Val clip data:    $VAL_CLIP_DATA"
-log "  Val video data:   $VAL_VIDEO_DATA"
+log "  Train data: $TRAIN_DATA"
+log "  Val data:   $VAL_DATA"
 
 # ════════════════════════════════════════════════════════════════════════════
 # 6. COMMON TRAINING ARGS
@@ -381,96 +335,53 @@ COMMON_ARGS=(
     --generation_max_new_tokens 256
     --prediction_loss_only False
     --report_to "$REPORT_TO"
-    --image_folder dataset
+    --image_folder "$SFT_DATASET_ROOT"
 )
 
 # ════════════════════════════════════════════════════════════════════════════
-# 7. STAGE 1: SFT on clips
+# 7. SFT on clips + full videos
 # ════════════════════════════════════════════════════════════════════════════
-log "=== 5. SFT Stage 1: Clips ==="
+log "=== 5. SFT (clips + full videos) ==="
 
-SFT_CLIP_OUT="$OUTPUT_ROOT/sft_clip_lora"
+SFT_OUT="$OUTPUT_ROOT/sft_lora"
 
-if [ -f "$SFT_CLIP_OUT/adapter_config.json" ]; then
-    log "  sft_clip_lora already exists, skipping Stage 1."
-    log "  (Delete $SFT_CLIP_OUT to retrain.)"
+if [ -f "$SFT_OUT/adapter_config.json" ]; then
+    log "  sft_lora already exists, skipping SFT."
+    log "  (Delete $SFT_OUT to retrain.)"
 else
     $VENV_PYTHON -u src/train/train_sft.py \
         --model_id "$MODEL_ID" \
-        --data_path "$TRAIN_CLIP_DATA" \
-        --eval_path "$VAL_CLIP_DATA" \
-        --output_dir "$SFT_CLIP_OUT" \
-        "${COMMON_ARGS[@]}" \
-        --num_train_epochs "$NUM_EPOCHS_CLIP"
+        --data_path "$TRAIN_DATA" \
+        --eval_path "$VAL_DATA" \
+        --output_dir "$SFT_OUT" \
+        "${COMMON_ARGS[@]}"
 fi
-log "Stage 1 (clips) complete."
+log "SFT complete."
 
 # ════════════════════════════════════════════════════════════════════════════
-# 8. MERGE Stage 1 LoRA → full model
+# 8. MERGE LoRA → final model
 # ════════════════════════════════════════════════════════════════════════════
-log "=== 6. Merge Stage 1 (clips) ==="
+log "=== 6. Merge SFT ==="
 
-SFT_CLIP_MERGED="$OUTPUT_ROOT/sft_clip_merged"
+SFT_MERGED="$OUTPUT_ROOT/sft_merged"
 
-if [ -f "$SFT_CLIP_MERGED/config.json" ]; then
-    log "  sft_clip_merged already exists, skipping merge."
+if [ -f "$SFT_MERGED/config.json" ]; then
+    log "  sft_merged already exists, skipping merge."
 else
     $VENV_PYTHON src/merge_lora.py \
-        --model-path "$SFT_CLIP_OUT" \
+        --model-path "$SFT_OUT" \
         --model-base "$MODEL_ID" \
-        --save-model-path "$SFT_CLIP_MERGED" \
+        --save-model-path "$SFT_MERGED" \
         --safe-serialization
 fi
-log "Clip LoRA merged to $SFT_CLIP_MERGED"
+log "SFT LoRA merged to $SFT_MERGED"
 
-# ════════════════════════════════════════════════════════════════════════════
-# 9. STAGE 2: SFT on full videos (base = merged clip model)
-# ════════════════════════════════════════════════════════════════════════════
-log "=== 7. SFT Stage 2: Full Videos ==="
-
-SFT_VIDEO_OUT="$OUTPUT_ROOT/sft_video_lora"
-SFT_VIDEO_BASE="$SFT_CLIP_MERGED"
-
-if [ -f "$SFT_VIDEO_OUT/adapter_config.json" ]; then
-    log "  sft_video_lora already exists, skipping Stage 2."
-    log "  (Delete $SFT_VIDEO_OUT to retrain.)"
-else
-    $VENV_PYTHON -u src/train/train_sft.py \
-        --model_id "$SFT_VIDEO_BASE" \
-        --data_path "$TRAIN_VIDEO_DATA" \
-        --eval_path "$VAL_VIDEO_DATA" \
-        --output_dir "$SFT_VIDEO_OUT" \
-        "${COMMON_ARGS[@]}" \
-        --num_train_epochs "$NUM_EPOCHS_VIDEO"
-fi
-log "Stage 2 (full videos) complete."
-
-# ════════════════════════════════════════════════════════════════════════════
-# 10. MERGE Stage 2 LoRA → final model
-# ════════════════════════════════════════════════════════════════════════════
-log "=== 8. Merge Stage 2 (final model) ==="
-
-SFT_VIDEO_MERGED="$OUTPUT_ROOT/sft_video_merged"
-
-if [ -f "$SFT_VIDEO_MERGED/config.json" ]; then
-    log "  sft_video_merged already exists, skipping merge."
-else
-    $VENV_PYTHON src/merge_lora.py \
-        --model-path "$SFT_VIDEO_OUT" \
-        --model-base "$SFT_VIDEO_BASE" \
-        --save-model-path "$SFT_VIDEO_MERGED" \
-        --safe-serialization
-fi
-
-# ════════════════════════════════════════════════════════════════════════════
 # DONE
 # ════════════════════════════════════════════════════════════════════════════
 log "=========================================="
 log "SFT pipeline complete!"
-log "  Stage 1 adapter:    $SFT_CLIP_OUT"
-log "  Stage 1 merged:     $SFT_CLIP_MERGED"
-log "  Stage 2 adapter:    $SFT_VIDEO_OUT"
-log "  FINAL merged model: $SFT_VIDEO_MERGED"
+log "  SFT adapter:        $SFT_OUT"
+log "  FINAL merged model: $SFT_MERGED"
 log "=========================================="
 if [ "$SUBSET_RATIO" != "1.0" ] && [ "$SUBSET_RATIO" != "1" ]; then
     log "NOTE: Trained on SUBSET_RATIO=${SUBSET_RATIO} of the data."
@@ -493,14 +404,14 @@ if [ "$HF_UPLOAD_ENABLED" = "1" ]; then
         err "HF_UPLOAD_ENABLED=1 but HF_TOKEN is not set. Example: HF_TOKEN=hf_xxxx"
     fi
 
-    log "  Source:  $SFT_VIDEO_MERGED"
+    log "  Source:  $SFT_MERGED"
     log "  Target:  $HF_HUB_REPO"
     [ "${HF_PRIVATE:-0}" = "1" ] && log "  Visibility: private" || log "  Visibility: public"
 
     HF_COMMIT_MSG="${HF_COMMIT_MSG:-Upload Qwen3-VL-2B cataract-surgery SFT ($(date -u +%Y-%m-%d))}"
 
     $VENV_PYTHON src/upload_to_hub.py \
-        --local-dir "$SFT_VIDEO_MERGED" \
+        --local-dir "$SFT_MERGED" \
         --repo-id   "$HF_HUB_REPO" \
         --token     "$HF_TOKEN" \
         --commit-message "$HF_COMMIT_MSG" \
@@ -509,5 +420,5 @@ if [ "$HF_UPLOAD_ENABLED" = "1" ]; then
     log "Upload complete! Model is at: https://huggingface.co/$HF_HUB_REPO"
 else
     log "Skipping HuggingFace Hub upload (set HF_UPLOAD_ENABLED=1 to enable)."
-    log "  To upload manually:  python src/upload_to_hub.py --local-dir $SFT_VIDEO_MERGED --repo-id your-username/my-model"
+    log "  To upload manually:  python src/upload_to_hub.py --local-dir $SFT_MERGED --repo-id your-username/my-model"
 fi

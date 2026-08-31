@@ -3,6 +3,7 @@ import torch
 from functools import lru_cache
 
 from transformers import AutoConfig
+
 from qwen_vl_utils import process_vision_info
 
 from constants import (
@@ -24,7 +25,6 @@ def replace_image_tokens(input_string, is_video=False):
         replacement = VISION_START_TOKEN + DEFAULT_IMAGE_TOKEN + VISION_END_TOKEN
 
     return re.sub(pattern, replacement, input_string)
-
 
 def llava_to_openai(conversations, is_video=False):
     role_mapping = {"human": "user", "gpt": "assistant"}
@@ -54,8 +54,11 @@ def truncate_sequence(input_ids, labels, max_length, eos_token_id):
 
     return input_ids, labels
 
-
 def pad_sequence(sequences, padding_side='right', padding_value=0):
+    """
+    Pad a list of sequences to the same length.
+    sequences: list of tensors in [seq_len, *] shape
+    """
     assert padding_side in ['right', 'left']
     max_size = sequences[0].size()
     trailing_dims = max_size[1:]
@@ -132,23 +135,24 @@ def format_assistant_response(
 
     return "", f"<think>\n{reasoning}\n</think>\n\n{content}"
 
-
 def get_image_info(image_path, min_pixel, max_pixel, width, height, image_patch_size):
+    # Using this because of process_vision_info function
+    # Need to fix this in the future
     content = {
-        "type": "image",
+        "type": "image", 
         "image": image_path,
         "min_pixels": min_pixel,
-        "max_pixels": max_pixel,
+        "max_pixels": max_pixel
     }
 
     if width is not None and height is not None:
         content["resized_width"] = width
         content["resized_height"] = height
-
+    
     messages = [
         {
-            "role": "user",
-            "content": [content],
+            "role": "user", 
+            "content": [content]
         }
     ]
 
@@ -156,83 +160,42 @@ def get_image_info(image_path, min_pixel, max_pixel, width, height, image_patch_
 
     return image_input[0]
 
-
-def probe_total_frames(video_path):
-    """Probe a video file's total frame count without decoding all frames.
-
-    Tries decord first (already a dependency via qwen-vl-utils[decord]),
-    falls back to imageio, then OpenCV. Returns 0 if all methods fail.
-    """
-    # decord
-    try:
-        import decord
-        decord.bridge.set_use_decord(False)
-        vr = decord.VideoReader(video_path, num_threads=1)
-        return len(vr)
-    except Exception:
-        pass
-
-    # imageio
-    try:
-        import imageio.v3 as iio
-        return int(iio.count(video_path, plugin="pyav"))
-    except Exception:
-        pass
-
-    # OpenCV
-    try:
-        import cv2
-        cap = cv2.VideoCapture(video_path)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
-        return max(total, 0)
-    except Exception:
-        pass
-
-    return 0
-
-
-def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, nframes, image_patch_size, return_video_metadata=False):
+def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, image_patch_size, return_video_metadata=False):
+    # Using this because of process_vision_info function
+    # Need to fix this in the future
     content = {
-        "type": "video",
+        "type": "video", 
         "video": video_path,
         "min_pixels": min_pixels,
         "max_pixels": max_pixels,
+        "fps": fps
     }
-
-    if fps is not None and nframes is None:
-        content["fps"] = fps
-    elif nframes is not None and fps is None:
-        # Cap nframes to the video's actual frame count to prevent
-        # ValueError in qwen_vl_utils.smart_nframes when nframes > total_frames.
-        total = probe_total_frames(video_path)
-        if total > 0 and nframes > total:
-            nframes = total
-        # smart_nframes requires at least 2 frames
-        if nframes < 2:
-            nframes = 2
-        content["nframes"] = nframes
-    elif fps is not None and nframes is not None:
-        raise ValueError("You cannot set both `fps` and `nframes` at the same time. Set only one.")
-    else:
-        raise ValueError("Set exactly one of `fps` or `nframes` (neither was set).")
 
     if width is not None and height is not None:
         content["resized_width"] = width
         content["resized_height"] = height
-
+    
     messages = [
         {
-            "role": "user",
-            "content": [content],
+            "role": "user", 
+            "content": [content]
         }
     ]
 
     _, video_input, video_kwargs = process_vision_info(
-        messages,
-        return_video_kwargs=True,
-        image_patch_size=image_patch_size,
-        return_video_metadata=return_video_metadata,
+        messages, 
+        return_video_kwargs=True, 
+        image_patch_size=image_patch_size, 
+        return_video_metadata=return_video_metadata
     )
 
     return video_input[0], video_kwargs
+
+def samples_per_class_from_ids(label_ids, num_classes):
+    
+    counts = torch.bincount(
+        torch.as_tensor(label_ids, dtype=torch.long),
+        minlength=num_classes
+    )
+    
+    return counts.tolist()

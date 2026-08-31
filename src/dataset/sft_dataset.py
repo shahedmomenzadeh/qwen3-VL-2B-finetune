@@ -29,7 +29,6 @@ from .data_utils import (
     use_default_system_message,
 )
 
-
 class SupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
@@ -71,7 +70,7 @@ class SupervisedDataset(Dataset):
         self.optional_reasoning_supported = model_supports_optional_reasoning(self.model_type)
         if self.data_args.enable_reasoning and not self.reasoning_supported:
             raise ValueError(
-                f"`enable_reasoning` is only supported for Qwen3-VL Thinking or Qwen3.5 models."
+                f"`enable_reasoning` is only supported for Qwen3-VL Thinking or Qwen3.5 models with official reasoning chat templates. "
                 f"Current model_type={self.model_type!r} does not qualify."
             )
 
@@ -102,18 +101,18 @@ class SupervisedDataset(Dataset):
                     if not image_file.startswith("http"):
                         image_file = os.path.join(image_folder, image_file)
                 image_input = get_image_info(
-                    image_file,
-                    self.image_min_pixel,
-                    self.image_max_pixel,
-                    self.image_resized_w,
-                    self.image_resized_h,
-                    self.image_patch_size,
-                )
+                        image_file, 
+                        self.image_min_pixel, 
+                        self.image_max_pixel, 
+                        self.image_resized_w, 
+                        self.image_resized_h, 
+                        self.image_patch_size
+                    )
                 images.append(image_input)
 
         elif "video" in sources:
             is_video = True
-            images = None
+            images=None
             grid_key = "video_grid_thw"
             pixel_key = "pixel_values_videos"
 
@@ -124,30 +123,26 @@ class SupervisedDataset(Dataset):
                 video_files = [video_files]
 
             videos = []
-            all_video_kwargs = []
             for video_file in video_files:
                 if not os.path.exists(video_file):
                     if not video_file.startswith("http"):
                         video_file = os.path.join(video_folder, video_file)
-                video_input, vk = get_video_info(
-                    video_file,
-                    self.video_min_pixel,
-                    self.video_max_pixel,
-                    self.video_resized_w,
-                    self.video_resized_h,
+                video_input, video_kwargs = get_video_info(
+                    video_file, 
+                    self.video_min_pixel, 
+                    self.video_max_pixel, 
+                    self.video_resized_w, 
+                    self.video_resized_h, 
                     self.data_args.fps,
-                    self.data_args.nframes,
                     self.image_patch_size,
-                    return_video_metadata=self.return_video_metadata,
+                    return_video_metadata=self.return_video_metadata
                 )
                 videos.append(video_input)
-                all_video_kwargs.append(vk)
-            video_kwargs = all_video_kwargs[0] if all_video_kwargs else {}
         else:
             grid_key = None
             pixel_key = None
-            images = None
-            videos = None
+            images=None
+            videos=None
 
         sources = copy.deepcopy(llava_to_openai(sources['conversations'], is_video=is_video))
 
@@ -160,7 +155,9 @@ class SupervisedDataset(Dataset):
 
         image_curr_count = 0
         video_curr_count = 0
-
+        
+        # Qwen2-VL uses a default system message so I've added this.
+        # Qwen3-Vl does not use a system message by default.
         if len(SYSTEM_MESSAGE) > 0 and use_default_system_message(self.model_type):
             system_message = f"{DEFAULT_IM_START_TOKEN}system\n{SYSTEM_MESSAGE}{DEFAULT_IM_END_TOKEN}\n"
             system_message_input_ids = processor.tokenizer(system_message, add_special_tokens=False, return_tensors='pt')['input_ids']
@@ -196,7 +193,8 @@ class SupervisedDataset(Dataset):
 
             if DEFAULT_IMAGE_TOKEN in user_input:
                 num_images = user_input.count(DEFAULT_IMAGE_TOKEN)
-                images_for_this_turn = images[image_curr_count: image_curr_count + num_images]
+                # Slice the images list to get the images for the current turn.
+                images_for_this_turn = images[image_curr_count : image_curr_count + num_images]
                 inputs = processor(text=[user_input], images=images_for_this_turn, videos=videos, padding=False, do_resize=False, return_tensors='pt')
                 prompt_input_ids = inputs['input_ids']
                 prompt_mm_token_type_ids = get_mm_token_type_ids(inputs, prompt_input_ids)
@@ -206,9 +204,22 @@ class SupervisedDataset(Dataset):
 
             elif DEFAULT_VIDEO_TOKEN in user_input:
                 num_videos = user_input.count(DEFAULT_VIDEO_TOKEN)
-                videos_for_this_turn = videos[video_curr_count: video_curr_count + num_videos]
-                if self.model_type in {"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe"}:
-                    videos_for_this_turn = videos[video_curr_count: video_curr_count + num_videos]
+                # Slice the videos list to get the videos for the current turn.
+                videos_for_this_turn = videos[video_curr_count : video_curr_count + num_videos]
+                if self.model_type == "qwen2_5_vl":
+                    inputs = processor(
+                        text=[user_input], 
+                        images=images, 
+                        videos=videos_for_this_turn, 
+                        padding=False, 
+                        do_resize=False, 
+                        return_tensors='pt', 
+                        **video_kwargs
+                    )
+                    prompt_mm_token_type_ids = get_mm_token_type_ids(inputs, inputs["input_ids"])
+                    all_second_gird.extend(inputs["second_per_grid_ts"])
+                elif self.model_type in {"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe"}:
+                    videos_for_this_turn = videos[video_curr_count : video_curr_count + num_videos]
                     video_datas_for_turn, video_metadatas_for_turn = zip(*videos_for_this_turn)
                     video_datas_for_turn = list(video_datas_for_turn)
                     video_metadatas_for_turn = list(video_metadatas_for_turn)
@@ -226,12 +237,12 @@ class SupervisedDataset(Dataset):
                     prompt_mm_token_type_ids = get_mm_token_type_ids(inputs, inputs["input_ids"])
                 else:
                     inputs = processor(
-                        text=[user_input],
-                        images=images,
-                        videos=videos_for_this_turn,
-                        padding=False,
-                        do_resize=False,
-                        return_tensors='pt',
+                        text=[user_input], 
+                        images=images, 
+                        videos=videos_for_this_turn, 
+                        padding=False, 
+                        do_resize=False, 
+                        return_tensors='pt'
                     )
                     prompt_mm_token_type_ids = get_mm_token_type_ids(inputs, inputs["input_ids"])
                 prompt_input_ids = inputs['input_ids']
@@ -260,9 +271,14 @@ class SupervisedDataset(Dataset):
             all_labels.append(labels)
             all_mm_token_type_ids.append(mm_token_type_ids)
 
+        # There is no need for eos or bos tokens in the input_ids
+        # Qwen2-VL does not use them
         input_ids = torch.cat(all_input_ids, dim=0).to(torch.long)
         labels = torch.cat(all_labels, dim=0).to(torch.long)
         mm_token_type_ids = torch.cat(all_mm_token_type_ids, dim=0).to(torch.long)
+
+        # eos_token_id = processor.tokenizer.convert_tokens_to_ids(DEFAULT_IM_END_TOKEN)
+        # input_ids, labels = truncate_sequence(input_ids, labels, self.max_length, eos_token_id)
 
         attention_mask = (input_ids > -1000000).to(torch.long)
 
@@ -284,7 +300,6 @@ class SupervisedDataset(Dataset):
             data_dict["second_per_grid_ts"] = second_gird
 
         return data_dict
-
 
 class DataCollatorForSupervisedDataset(object):
     """Collate examples for supervised fine-tuning."""
@@ -350,7 +365,6 @@ class DataCollatorForSupervisedDataset(object):
 
         return data_dict
 
-
 def make_supervised_data_module(model_id, processor, data_args):
     """Make dataset and collator for supervised fine-tuning."""
     sft_dataset = SupervisedDataset(
@@ -359,12 +373,12 @@ def make_supervised_data_module(model_id, processor, data_args):
     eval_dataset = None
     if data_args.eval_path is not None:
         eval_dataset = SupervisedDataset(
-            data_path=data_args.eval_path,
-            processor=processor,
-            data_args=data_args,
-            model_id=model_id,
-        )
-
+              data_path=data_args.eval_path,
+              processor=processor,
+              data_args=data_args,
+              model_id=model_id
+          )
+        
     data_collator = DataCollatorForSupervisedDataset(pad_token_id=processor.tokenizer.pad_token_id)
 
     return dict(train_dataset=sft_dataset,

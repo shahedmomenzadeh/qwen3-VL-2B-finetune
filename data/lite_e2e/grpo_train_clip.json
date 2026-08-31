@@ -1,0 +1,146 @@
+[
+  {
+    "id": "grpo_MruUgO5HFZI_clip_01_grpo_0",
+    "video": "Train/MruUgO5HFZI/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich surgical step is currently being performed in this video clip?\nA) Hydrodissection\nB) Viscoelastic injection\nC) Capsulorhexis\nD) IOL explantation\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": ""
+      }
+    ],
+    "correct_answer": "B",
+    "question_type": "step_identification",
+    "reference_reasoning": "In the video, a cannula is inserted into the anterior chamber to deliver a substance that expands and stabilizes the space between the cornea and the iris, which is the procedure for viscoelastic injection.",
+    "reward_type": "deterministic"
+  },
+  {
+    "id": "grpo_MruUgO5HFZI_clip_01_grpo_1",
+    "video": "Train/MruUgO5HFZI/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat visual change occurs in the anterior chamber as the substance is injected?\nA) The chamber collapses and becomes shallow\nB) The chamber deepens and a blue-tinted fluid becomes visible\nC) The chamber fills with air bubbles and blood\nD) The iris begins to constrict rapidly\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": ""
+      }
+    ],
+    "correct_answer": "B",
+    "question_type": "visual_observation",
+    "reference_reasoning": "As the surgeon operates, you can see a blue-tinted ophthalmic viscosurgical device filling the eye, which causes the anterior chamber to visibly deepen and stabilize.",
+    "reward_type": "deterministic"
+  },
+  {
+    "id": "grpo_MruUgO5HFZI_clip_01_grpo_2",
+    "video": "Train/MruUgO5HFZI/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat instrument is the surgeon using to manipulate the anterior chamber in this clip?\nA) Viscoelastic cannula\nB) Phaco tip\nC) Capsulorhexis forceps\nD) Diamond keratome\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": ""
+      }
+    ],
+    "correct_answer": "A",
+    "question_type": "instrument_identification",
+    "reference_reasoning": "The surgeon is using a thin, blunt-ended tube, specifically a viscoelastic cannula, to precisely inject the blue OVD into the space behind the cornea.",
+    "reward_type": "deterministic"
+  },
+  {
+    "id": "grpo_MruUgO5HFZI_clip_02_grpo_0",
+    "video": "Train/MruUgO5HFZI/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich surgical procedure is being demonstrated in this video sequence?\nA) Primary cataract extraction\nB) IOL positioning and iris tuck management\nC) Pars plana vitrectomy\nD) Descemet's membrane endothelial keratoplasty\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": ""
+      }
+    ],
+    "correct_answer": "B",
+    "question_type": "step_identification",
+    "reference_reasoning": "The surgeon is seen using an instrument to manipulate the haptic of an anterior chamber intraocular lens that was improperly tucked behind the iris, repositioning it correctly into the anterior chamber angle.",
+    "reward_type": "deterministic"
+  },
+  {
+    "id": "grpo_MruUgO5HFZI_clip_02_grpo_1",
+    "video": "Train/MruUgO5HFZI/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat technique is used to ensure the surgeon has a clear view of the anterior chamber angle during the manipulation?\nA) Direct visualization through the operating microscope alone\nB) The application of a gonioscopy lens to the cornea\nC) Indirect ophthalmoscopy\nD) Retroillumination from the red reflex\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": ""
+      }
+    ],
+    "correct_answer": "B",
+    "question_type": "visual_observation",
+    "reference_reasoning": "In the video, a gonioscopy lens is placed directly on the corneal surface, which provides the necessary visualization of the peripheral anterior chamber angle to safely manage the tucked haptic.",
+    "reward_type": "deterministic"
+  },
+  {
+    "id": "grpo_MruUgO5HFZI_clip_02_grpo_2",
+    "video": "Train/MruUgO5HFZI/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich specific tool is being used on the surface of the eye to assist with visualization of the internal structures?\nA) Lid speculum\nB) Forceps\nC) Gonioscopy lens\nD) Phacoemulsification handpiece\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": ""
+      }
+    ],
+    "correct_answer": "C",
+    "question_type": "instrument_identification",
+    "reference_reasoning": "The video shows a gonioscopy lens being held against the eye, which allows the surgeon to see into the angle of the anterior chamber where the IOL haptic is located.",
+    "reward_type": "deterministic"
+  },
+  {
+    "id": "grpo_SqYNCvkYhls_clip_06_grpo_1",
+    "video": "Train/SqYNCvkYhls/clip_06.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat visual change indicates that the cortical material has been successfully removed?\nA) The anterior chamber becomes shallower\nB) A bright red reflex appears and the posterior capsule becomes clearly visible\nC) The iris starts to flutter with each suction pulse\nD) The corneal incision widens\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": ""
+      }
+    ],
+    "correct_answer": "B",
+    "question_type": "visual_observation",
+    "reference_reasoning": "After the handpiece aspirates the cortex, the video shows a clear posterior capsule with a bright red reflex, confirming that the cortical material has been cleared.",
+    "reward_type": "deterministic"
+  },
+  {
+    "id": "grpo_HFuf5dmUUnM_clip_05_grpo_2",
+    "video": "Train/HFuf5dmUUnM/clip_05.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich instrument is the surgeon using to grasp and rotate the suture?\nA) Tying forceps\nB) Hydrodissection cannula\nC) IOL injector\nD) Keratome blade\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": ""
+      }
+    ],
+    "correct_answer": "A",
+    "question_type": "instrument_identification",
+    "reference_reasoning": "The surgeon is using fine-tipped tying forceps to precisely grasp the suture loop and manipulate the knot into the corneal track.",
+    "reward_type": "deterministic"
+  }
+]

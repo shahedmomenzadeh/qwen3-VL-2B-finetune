@@ -24,9 +24,8 @@ from .data_utils import (
     use_default_system_message,
 )
 
-
 class GRPODataset(Dataset):
-    """Dataset for GRPO training."""
+    """Dataset for DPO training"""
 
     def __init__(
         self,
@@ -66,7 +65,7 @@ class GRPODataset(Dataset):
         self.optional_reasoning_supported = model_supports_optional_reasoning(self.model_type)
         if self.data_args.enable_reasoning and not self.reasoning_supported:
             raise ValueError(
-                f"`enable_reasoning` is only supported for Qwen3-VL Thinking or Qwen3.5 models."
+                f"`enable_reasoning` is only supported for Qwen3-VL Thinking or Qwen3.5 models with official reasoning chat templates. "
                 f"Current model_type={self.model_type!r} does not qualify."
             )
 
@@ -74,7 +73,7 @@ class GRPODataset(Dataset):
 
     def __len__(self):
         return len(self.list_data_dict)
-
+    
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
 
@@ -82,7 +81,7 @@ class GRPODataset(Dataset):
 
         if "image" in sources:
             videos = None
-
+            
             image_files = sources["image"]
             image_folder = self.data_args.image_folder
 
@@ -90,23 +89,23 @@ class GRPODataset(Dataset):
                 image_files = [image_files]
 
             images = []
-
+            
             for image_file in image_files:
                 if not os.path.exists(image_file):
                     if not image_file.startswith("http"):
                         image_file = os.path.join(image_folder, image_file)
                 image_input = get_image_info(
-                    image_file,
-                    self.image_min_pixel,
-                    self.image_max_pixel,
-                    self.image_resized_w,
-                    self.image_resized_h,
-                    self.image_patch_size,
-                )
+                        image_file, 
+                        self.image_min_pixel, 
+                        self.image_max_pixel, 
+                        self.image_resized_w, 
+                        self.image_resized_h, 
+                        self.image_patch_size
+                    )
                 images.append(image_input)
         elif "video" in sources:
             is_video = True
-            images = None
+            images=None
 
             video_files = sources["video"]
             video_folder = self.data_args.image_folder
@@ -115,28 +114,24 @@ class GRPODataset(Dataset):
                 video_files = [video_files]
 
             videos = []
-            all_video_kwargs = []
             for video_file in video_files:
                 if not os.path.exists(video_file):
                     if not video_file.startswith("http"):
                         video_file = os.path.join(video_folder, video_file)
-                video_input, vk = get_video_info(
-                    video_file,
-                    self.video_min_pixel,
-                    self.video_max_pixel,
-                    self.video_resized_w,
-                    self.video_resized_h,
+                video_input, video_kwargs = get_video_info(
+                    video_file, 
+                    self.video_min_pixel, 
+                    self.video_max_pixel, 
+                    self.video_resized_w, 
+                    self.video_resized_h, 
                     self.data_args.fps,
-                    self.data_args.nframes,
                     self.image_patch_size,
-                    return_video_metadata=self.return_video_metadata,
+                    return_video_metadata=self.return_video_metadata
                 )
                 videos.append(video_input)
-                all_video_kwargs.append(vk)
-            video_kwargs = all_video_kwargs[0] if all_video_kwargs else {}
         else:
-            images = None
-            videos = None
+            images=None
+            videos=None
 
         conversations = copy.deepcopy(llava_to_openai(sources['conversations'], is_video=is_video))
 
@@ -167,21 +162,12 @@ class GRPODataset(Dataset):
 
         user_prompt = system_message + user_message
 
-        correct_answer = sources.get("correct_answer", "")
-        question_type = sources.get("question_type", "")
-        reference_reasoning = sources.get("reference_reasoning", "")
-        reward_type = sources.get("reward_type", "")
-
         data_dict = dict(
             prompt=user_prompt,
-            assistant=correct_answer,
+            assistant=assistant_prompt,
         )
 
-        data_dict["correct_answer"] = correct_answer
-        data_dict["question_type"] = question_type
-        data_dict["reference_reasoning"] = reference_reasoning
-        data_dict["reward_type"] = reward_type
-
+        # Only include images/videos keys when they have actual data
         if images is not None:
             data_dict["images"] = images
         if videos is not None:
@@ -189,10 +175,9 @@ class GRPODataset(Dataset):
             data_dict["video_kwargs"] = video_kwargs
 
         return data_dict
-
-
+    
 def make_grpo_data_module(model_id, processor, data_args):
-    """Make dataset for GRPO training."""
+    """Make dataset and collator for supervised fine-tuning."""
     grpo_dataset = GRPODataset(
         data_path=data_args.data_path, processor=processor, data_args=data_args, model_id=model_id
     )

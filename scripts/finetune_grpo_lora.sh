@@ -1,16 +1,17 @@
 #!/bin/bash
 # GRPO LoRA + QLoRA Fine-tuning for Qwen3-VL-2B-Instruct
 # This uses the SFT-merged model as base for RL fine-tuning.
-# Dataset: Cataract surgery video clips (multi-choice QA)
+# Dataset: Cataract surgery video clips (YouTube MCQs + phase recognition)
 
-# Use the SFT merged model as base (Phase 3/4)
-MODEL_NAME=${MODEL_NAME:-"output/sft_video_merged"}
+# Use the SFT merged model as base (single SFT on clips + full videos)
+MODEL_NAME=${MODEL_NAME:-"output/sft_merged"}
 
 export PYTHONPATH=src:${PYTHONPATH:-}
 
 # ---------- Hyperparameters (override via env vars) ----------
-DATA_PATH=${DATA_PATH:-"data/grpo_train_clip.json"}
-IMAGE_FOLDER=${IMAGE_FOLDER:-"dataset"}
+DATA_PATH=${DATA_PATH:-"data/grpo_train_dataset_grpo.json"}
+EVAL_PATH=${EVAL_PATH:-"data/grpo_val_dataset_grpo.json"}
+IMAGE_FOLDER=${IMAGE_FOLDER:-"dataset_grpo"}
 OUTPUT_DIR=${OUTPUT_DIR:-"output/grpo_lora"}
 NUM_EPOCHS=${NUM_EPOCHS:-1}
 LEARNING_RATE=${LEARNING_RATE:-5e-6}
@@ -27,6 +28,7 @@ MAX_COMPLETION_LENGTH=${MAX_COMPLETION_LENGTH:-512}
 BETA=${BETA:-0.04}
 TEMPERATURE=${TEMPERATURE:-0.9}
 TOP_P=${TOP_P:-1.0}
+EVAL_STEPS=${EVAL_STEPS:-500}
 
 # Video — set ONLY ONE of FPS or NFRAMES
 # NFRAMES: caps sampled frames. Videos with fewer frames return all frames.
@@ -66,6 +68,7 @@ deepspeed src/train/train_grpo.py \
     --num_lora_modules -1 \
     --model_id $MODEL_NAME \
     --data_path $DATA_PATH \
+    --eval_path $EVAL_PATH \
     --image_folder $IMAGE_FOLDER \
     --freeze_vision_tower True \
     --freeze_llm True \
@@ -93,6 +96,9 @@ deepspeed src/train/train_grpo.py \
     --temperature $TEMPERATURE \
     --top_p $TOP_P \
     --logging_steps 1 \
+    --eval_strategy steps \
+    --eval_steps $EVAL_STEPS \
+    --per_device_eval_batch_size 1 \
     --tf32 True \
     --gradient_checkpointing True \
     --report_to tensorboard \

@@ -3,7 +3,7 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VisionRotaryEmbedding,
     Qwen2_5_VLVisionBlock,
     Qwen2_5_VLPatchMerger,
-    Qwen2_5_VLPreTrainedModel,
+    Qwen2_5_VLPreTrainedModel
 )
 from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLVisionConfig
 import torch
@@ -13,10 +13,8 @@ import numpy as np
 import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 
-
 def replace_qwen2_5_vision():
     transformers.models.qwen2_5_vl.modeling_qwen2_5_vl.Qwen2_5_VisionTransformerPretrainedModel = Qwen2_5_VisionTransformerPretrainedModelWithPatchedWindow
-
 
 class Qwen2_5_VisionTransformerPretrainedModelWithPatchedWindow(Qwen2_5_VLPreTrainedModel):
     config: Qwen2_5_VLVisionConfig
@@ -161,7 +159,7 @@ class Qwen2_5_VisionTransformerPretrainedModelWithPatchedWindow(Qwen2_5_VLPreTra
 
         if cu_seqlens.device != hidden_states.device:
              cu_seqlens = cu_seqlens.to(hidden_states.device, non_blocking=True)
-
+             
         for layer_num, blk in enumerate(self.blocks):
             if layer_num in self.fullatt_block_indexes:
                 cu_seqlens_now = cu_seqlens

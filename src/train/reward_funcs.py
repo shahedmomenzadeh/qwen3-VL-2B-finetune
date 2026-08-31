@@ -1,105 +1,63 @@
 import re
 
+try:
+    from math_verify import LatexExtractionConfig, parse, verify
+    from latex2sympy2_extended import NormalizationConfig
+except ImportError:
+    LatexExtractionConfig = None
+    NormalizationConfig = None
+    parse = None
+    verify = None
 
-def deterministic_reward(completions, correct_answer, **kwargs):
-    """Reward function for deterministic answer matching (step_identification, instrument_identification, sequence_ordering).
-
-    Matches:
-    - "Therefore the answer is B"
-    - "Answer: A"
-    - "E, A, B, C, D" (for sequence ordering)
-    - "The answer is B" -> extracts 'B'
-    """
+def accuracy_reward(completions, assistant, **kwargs):
+    """Reward function that checks if the completion is correct using either symbolic verification or exact string matching."""
     rewards = []
-    for completion, answer in zip(completions, correct_answer):
-        if not answer:
-            rewards.append(0.0)
+
+    for completion, sol in zip(completions, assistant):
+        if parse is None or verify is None or LatexExtractionConfig is None or NormalizationConfig is None:
+            rewards.append(float(completion.strip().lower() == sol.strip().lower()))
             continue
 
-        answer = answer.strip()
-        completion_lower = completion.strip().lower()
+        try:
+            gold_parsed = parse(sol, extraction_mode="first_match")
+        except Exception as e:
+            gold_parsed = []
 
-        # Try to extract answer after "answer is" or "Answer:"
-        answer_patterns = [
-            r'(?:answer\s+is)\s*([A-D](?:\s*,\s*[A-D])*)',
-            r'answer\s*:\s*([A-D](?:\s*,\s*[A-D])*)',
-            r'\b([A-D](?:\s*,\s*[A-D])*)\b',
-        ]
+        if len(gold_parsed) != 0:
+            # Try parsing predicted answer too
+            try:
+                answer_parsed = parse(
+                    completion,
+                    extraction_config=[
+                        LatexExtractionConfig(
+                            normalization_config=NormalizationConfig(
+                                nits=False,
+                                malformed_operators=False,
+                                basic_latex=True,
+                                boxed="all",
+                                units=True,
+                            ),
+                            boxed_match_priority=0,
+                            try_extract_without_anchor=False,
+                        )
+                    ],
+                    extraction_mode="first_match",
+                )
+                reward = float(verify(gold_parsed, answer_parsed))
+            except Exception as e:
+                print(f"verify failed: {e}, answer: {completion}, gold: {sol}")
+                reward = None
+        else:
+            # fallback to text match
+            reward = float(completion.strip().lower() == sol.strip().lower())
 
-        pred = ""
-        for pattern in answer_patterns:
-            match = re.search(pattern, completion_lower)
-            if match:
-                candidate = match.group(1).replace(" ", "")
-                # Validate that extracted answer matches expected format
-                if len(candidate) <= len(answer.replace(" ", "")):
-                    pred = candidate
-                    break
-
-        if not pred:
-            # Fallback: check if answer appears anywhere in completion
-            if answer.lower() in completion_lower:
-                pred = answer.replace(" ", "")
-
-        rewards.append(1.0 if pred == answer.replace(" ", "") else 0.0)
+        rewards.append(reward)
 
     return rewards
-
-
-def llm_judge_reward(completions, reference_reasoning, **kwargs):
-    """Reward function that checks if the completion contains key reasoning elements from the reference.
-
-    This is a heuristic-based approach. For production, consider using a teacher LLM.
-    """
-    rewards = []
-    for completion, reference in zip(completions, reference_reasoning):
-        if not reference:
-            rewards.append(0.0)
-            continue
-
-        completion_lower = completion.strip().lower()
-        reference_lower = reference.strip().lower()
-
-        # Check for key phrases from reference reasoning
-        key_phrases = reference_lower.split('.')
-        key_phrases = [p.strip() for p in key_phrases if len(p.strip()) > 20]
-
-        if not key_phrases:
-            rewards.append(0.5)  # No reference to compare
-            continue
-
-        # Score based on how many key reasoning concepts are mentioned
-        matched = sum(1 for phrase in key_phrases if phrase[:30] in completion_lower)
-        score = matched / len(key_phrases)
-
-        # Bonus for having reasoning structure
-        has_reasoning = bool(re.search(
-            r'(?:because|since|as|therefore|hence|thus|consequently|this\s+(?:means|indicates|shows|suggests))',
-            completion_lower,
-        ))
-        if has_reasoning:
-            score = min(1.0, score + 0.3)
-
-        rewards.append(score)
-
-    return rewards
-
 
 def format_reward(completions, **kwargs):
-    """Reward function that checks if the completion has proper reasoning format."""
-    rewards = []
-    for completion in completions:
-        completion_lower = completion.strip().lower()
-
-        # Check for reasoning indicators followed by answer
-        has_reasoning = bool(re.search(
-            r'(?:because|since|as|therefore|hence|thus|consequently|the\s+answer\s+is)',
-            completion_lower,
-        ))
-
-        # Check for answer letter
-        has_answer = bool(re.search(r'\b[A-D]\b', completion))
-
-        rewards.append(1.0 if (has_reasoning and has_answer) else 0.0)
-
+    """Reward function that checks if the completion has a specific format."""
+    pattern = r"^<think>\n.*?\n</think>\n<answer>\n.*?\n</answer>$"
+    matches = [re.match(pattern, content, re.DOTALL | re.MULTILINE) for content in completions]
+    rewards = [1.0 if match else 0.0 for match in matches]
     return rewards

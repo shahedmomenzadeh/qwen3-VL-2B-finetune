@@ -1,8 +1,11 @@
 # GRPO Configuration
 # Default hyperparameters for QLoRA + LoRA GRPO training
 
-# Model (use SFT merged model as base)
+# Model (use the SFT merged model as base)
 model_id: "output/sft_merged"
+data_path: "data/grpo_train_dataset_grpo.json"
+eval_path: "data/grpo_val_dataset_grpo.json"
+image_folder: "dataset_grpo"
 bits: 8                          # 8-bit QLoRA
 lora_enable: true
 vision_lora: true
@@ -51,10 +54,13 @@ dataloader_num_workers: 4
 # Video
 video_min_pixels: 131072
 video_max_pixels: 262144
-fps: 1
+nframes: 60
 
 # Logging & saving
 logging_steps: 1
+eval_strategy: "steps"
+eval_steps: 500
+per_device_eval_batch_size: 1
 save_strategy: "epoch"
 save_total_limit: 3
 report_to: "tensorboard"

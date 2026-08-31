@@ -2,10 +2,8 @@
 # train.sh — Full training pipeline for Qwen3-VL-2B LoRA SFT + GRPO
 #
 # Stages:
-#   1. SFT on clips    → merge → output/sft_clip_merged
-#   2. SFT on videos   → merge → output/sft_video_merged
-#   3. GRPO on clips   (base = sft_video_merged)
-#   4. GRPO on videos  (base = merged clip GRPO)  → merge → output/grpo_video_merged
+#   1. SFT on dataset_sft (clips + full videos) → merge → output/sft_merged
+#   2. GRPO on dataset_grpo (YouTube + phase tasks) → merge → output/grpo_merged
 #
 # Override any param via env:  MODEL_NAME=... BITS=... ./train.sh
 
@@ -62,12 +60,17 @@ export HF_HOME="${HF_HOME:-$SCRIPT_DIR/hf_cache}"
 # --- Model ---
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-VL-2B-Instruct}"
 
-# --- Dataset ---
-# The prepared JSONs store video paths relative to the split directory
-# (e.g., YT_ID/clip.mp4 relative to dataset/Train/).
-# We post-process them to include the split prefix (Train/YT_ID/clip.mp4)
-# so that a single IMAGE_FOLDER=dataset works for both train and eval.
+# --- Datasets ---
+# The separated datasets contain SFT and GRPO annotations independently.
+# Prepared JSONs receive a split prefix so each stage can use its own dataset root.
+SFT_DATASET_ROOT="${SFT_DATASET_ROOT:-dataset_sft}"
+GRPO_DATASET_ROOT="${GRPO_DATASET_ROOT:-dataset_grpo}"
 DATA_PREFIX="${DATA_PREFIX:-data}"
+
+for split in Train Validation; do
+    [ -d "$SFT_DATASET_ROOT/$split" ] || err "$SFT_DATASET_ROOT/$split missing"
+    [ -d "$GRPO_DATASET_ROOT/$split" ] || err "$GRPO_DATASET_ROOT/$split missing"
+done
 
 # --- Output root ---
 OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/output}"
@@ -120,21 +123,40 @@ log "  NFRAMES=$NFRAMES  FPS=${FPS:-unset}"
 # ────────────────────────────────────────────────────────────
 log "Preparing data..."
 
+prepared_data_needs_refresh() {
+    local dataset_root="$1"
+    local prepared_path="$2"
+    if [ ! -f "$prepared_path" ]; then
+        return 0
+    fi
+    [ -n "$(find "$dataset_root/Train" "$dataset_root/Validation" -type f -newer "$prepared_path" -print -quit 2>/dev/null)" ]
+}
+
+SFT_PREPARE=0
+for prepared_file in sft_train_dataset_sft.json sft_val_dataset_sft.json; do
+    if prepared_data_needs_refresh "$SFT_DATASET_ROOT" "$DATA_PREFIX/$prepared_file"; then
+        SFT_PREPARE=1
+    fi
+done
+
 # Re-generate prepared JSONs (optional — skip if already present)
-if [ ! -f "$DATA_PREFIX/sft_train_clip.json" ] || [ "${FORCE_REPREPARE:-0}" = "1" ]; then
-    log "Running prepare_sft.py ..."
-    $VENV_PYTHON data/prepare_sft.py --input-dir dataset/Train --output "$DATA_PREFIX/sft_train_clip.json" --data-type clip
-    $VENV_PYTHON data/prepare_sft.py --input-dir dataset/Train --output "$DATA_PREFIX/sft_train_video.json" --data-type full_video
-    $VENV_PYTHON data/prepare_sft.py --input-dir dataset/Validation --output "$DATA_PREFIX/sft_val_clip.json" --data-type clip
-    $VENV_PYTHON data/prepare_sft.py --input-dir dataset/Validation --output "$DATA_PREFIX/sft_val_video.json" --data-type full_video
+if [ "$SFT_PREPARE" = "1" ] || [ "${FORCE_REPREPARE:-0}" = "1" ]; then
+    log "Running prepare_sft.py (clips + full videos combined)..."
+    $VENV_PYTHON data/prepare_sft.py --input-dir "$SFT_DATASET_ROOT/Train" --output "$DATA_PREFIX/sft_train_dataset_sft.json" --data-type all
+    $VENV_PYTHON data/prepare_sft.py --input-dir "$SFT_DATASET_ROOT/Validation" --output "$DATA_PREFIX/sft_val_dataset_sft.json" --data-type all
 fi
 
-if [ ! -f "$DATA_PREFIX/grpo_train_clip.json" ] || [ "${FORCE_REPREPARE:-0}" = "1" ]; then
+GRPO_PREPARE=0
+for prepared_file in grpo_train_dataset_grpo.json grpo_val_dataset_grpo.json; do
+    if prepared_data_needs_refresh "$GRPO_DATASET_ROOT" "$DATA_PREFIX/$prepared_file"; then
+        GRPO_PREPARE=1
+    fi
+done
+
+if [ "$GRPO_PREPARE" = "1" ] || [ "${FORCE_REPREPARE:-0}" = "1" ]; then
     log "Running prepare_grpo.py ..."
-    $VENV_PYTHON data/prepare_grpo.py --input-dir dataset/Train --output "$DATA_PREFIX/grpo_train_clip.json" --data-type clip
-    $VENV_PYTHON data/prepare_grpo.py --input-dir dataset/Train --output "$DATA_PREFIX/grpo_train_video.json" --data-type full_video
-    $VENV_PYTHON data/prepare_grpo.py --input-dir dataset/Validation --output "$DATA_PREFIX/grpo_val_clip.json" --data-type clip
-    $VENV_PYTHON data/prepare_grpo.py --input-dir dataset/Validation --output "$DATA_PREFIX/grpo_val_video.json" --data-type full_video
+    $VENV_PYTHON data/prepare_grpo.py --input-dir "$GRPO_DATASET_ROOT/Train" --output "$DATA_PREFIX/grpo_train_dataset_grpo.json" --data-type all
+    $VENV_PYTHON data/prepare_grpo.py --input-dir "$GRPO_DATASET_ROOT/Validation" --output "$DATA_PREFIX/grpo_val_dataset_grpo.json" --data-type all
 fi
 
 log "Data preparation done."
@@ -165,19 +187,20 @@ run_training() {
 }
 
 # ────────────────────────────────────────────────────────────
-# 4. STAGE 1: SFT on clips
+# 4. STAGE 1: SFT on all data (clips + full videos → merged SFT base)
 # ────────────────────────────────────────────────────────────
-SFT_CLIP_OUT="${OUTPUT_ROOT}/sft_clip_lora"
+SFT_BASE="$MODEL_NAME"
+SFT_OUT="${OUTPUT_ROOT}/sft_lora"
 
-if [ ! -f "${SFT_CLIP_OUT}/adapter_config.json" ]; then
-    run_training "SFT-clip" \
+if [ ! -f "${SFT_OUT}/adapter_config.json" ]; then
+    run_training "SFT" \
         src/train/train_sft.py \
         --deepspeed "$DEEPSPEED_CONFIG" \
-        --model_id "$MODEL_NAME" \
-        --data_path "$DATA_PREFIX/sft_train_clip.json" \
-        --eval_path "$DATA_PREFIX/sft_val_clip.json" \
-        --image_folder dataset \
-        --output_dir "$SFT_CLIP_OUT" \
+        --model_id "$SFT_BASE" \
+        --data_path "$DATA_PREFIX/sft_train_dataset_sft.json" \
+        --eval_path "$DATA_PREFIX/sft_val_dataset_sft.json" \
+        --image_folder "$SFT_DATASET_ROOT" \
+        --output_dir "$SFT_OUT" \
         --bits "$BITS" \
         --lora_enable True \
         --vision_lora True \
@@ -221,41 +244,40 @@ if [ ! -f "${SFT_CLIP_OUT}/adapter_config.json" ]; then
         --prediction_loss_only False \
         --report_to "$REPORT_TO"
 else
-    log "SFT-clip already exists at $SFT_CLIP_OUT, skipping."
+    log "SFT already exists at $SFT_OUT, skipping."
 fi
 
 # ────────────────────────────────────────────────────────────
-# 5. MERGE SFT clip
+# 5. MERGE SFT → full model (base for GRPO)
 # ────────────────────────────────────────────────────────────
-SFT_CLIP_MERGED="${OUTPUT_ROOT}/sft_clip_merged"
+SFT_MERGED="${OUTPUT_ROOT}/sft_merged"
 
-if [ ! -f "${SFT_CLIP_MERGED}/config.json" ]; then
-    log "Merging SFT clip LoRA..."
+if [ ! -f "${SFT_MERGED}/config.json" ]; then
+    log "Merging SFT LoRA..."
     $VENV_PYTHON src/merge_lora.py \
-        --model-path "$SFT_CLIP_OUT" \
-        --model-base "$MODEL_NAME" \
-        --save-model-path "$SFT_CLIP_MERGED" \
+        --model-path "$SFT_OUT" \
+        --model-base "$SFT_BASE" \
+        --save-model-path "$SFT_MERGED" \
         --safe-serialization
-    log "SFT clip merged to $SFT_CLIP_MERGED"
+    log "SFT merged to $SFT_MERGED"
 else
-    log "SFT clip merged already exists at $SFT_CLIP_MERGED, skipping."
+    log "SFT merged already exists at $SFT_MERGED, skipping."
 fi
-
 # ────────────────────────────────────────────────────────────
-# 6. STAGE 2: SFT on videos (base = merged clip)
+# 6. STAGE 2: GRPO on dataset_grpo (base = SFT merged)
 # ────────────────────────────────────────────────────────────
-SFT_VIDEO_OUT="${OUTPUT_ROOT}/sft_video_lora"
-SFT_VIDEO_BASE="$SFT_CLIP_MERGED"
+GRPO_BASE="$SFT_MERGED"
+GRPO_OUT="${OUTPUT_ROOT}/grpo_lora"
 
-if [ ! -f "${SFT_VIDEO_OUT}/adapter_config.json" ]; then
-    run_training "SFT-video" \
-        src/train/train_sft.py \
+if [ ! -f "${GRPO_OUT}/adapter_config.json" ]; then
+    run_training "GRPO" \
+        src/train/train_grpo.py \
         --deepspeed "$DEEPSPEED_CONFIG" \
-        --model_id "$SFT_VIDEO_BASE" \
-        --data_path "$DATA_PREFIX/sft_train_video.json" \
-        --eval_path "$DATA_PREFIX/sft_val_video.json" \
-        --image_folder dataset \
-        --output_dir "$SFT_VIDEO_OUT" \
+        --model_id "$GRPO_BASE" \
+        --data_path "$DATA_PREFIX/grpo_train_dataset_grpo.json" \
+        --eval_path "$DATA_PREFIX/grpo_val_dataset_grpo.json" \
+        --image_folder "$GRPO_DATASET_ROOT" \
+        --output_dir "$GRPO_OUT" \
         --bits "$BITS" \
         --lora_enable True \
         --vision_lora True \
@@ -271,198 +293,53 @@ if [ ! -f "${SFT_VIDEO_OUT}/adapter_config.json" ]; then
         --bf16 True --fp16 False --tf32 True \
         --disable_flash_attn2 False \
         --use_liger_kernel True \
-        --num_train_epochs "$EPOCHS_SFT" \
-        --per_device_train_batch_size "$BATCH_PER_DEVICE" \
+        --loss_type dapo \
+        --num_train_epochs "$EPOCHS_GRPO" \
+        --num_generations "$NUM_GENERATIONS" \
+        --per_device_train_batch_size 1 \
         --gradient_accumulation_steps "$GRAD_ACCUM" \
-        --learning_rate "$LR" \
+        --max_completion_length "$MAX_COMPLETION_LENGTH" \
+        --learning_rate "$GRPO_LR" \
         --vision_lr "$VISION_LR" \
         --merger_lr "$MERGER_LR" \
+        --beta "$BETA" \
+        --temperature "$TEMPERATURE" \
+        --top_p "$TOP_P" \
         --weight_decay 0.1 \
         --warmup_steps 10 \
         --lr_scheduler_type cosine \
         --video_min_pixels "$VIDEO_MIN_PIXELS" \
         --video_max_pixels "$VIDEO_MAX_PIXELS" \
         $VIDEO_FRAME_ARGS \
-        --max_seq_length 32768 \
         --gradient_checkpointing True \
         --lazy_preprocess True \
         --remove_unused_columns False \
         --dataloader_num_workers 4 \
         --logging_steps 1 \
-        --save_strategy steps \
-        --save_steps 500 \
-        --save_total_limit 3 \
         --eval_strategy steps \
         --eval_steps 500 \
         --per_device_eval_batch_size 1 \
-        --generation_max_new_tokens 256 \
-        --prediction_loss_only False \
-        --report_to "$REPORT_TO"
-else
-    log "SFT-video already exists at $SFT_VIDEO_OUT, skipping."
-fi
-
-# ────────────────────────────────────────────────────────────
-# 7. MERGE SFT video
-# ────────────────────────────────────────────────────────────
-SFT_VIDEO_MERGED="${OUTPUT_ROOT}/sft_video_merged"
-
-if [ ! -f "${SFT_VIDEO_MERGED}/config.json" ]; then
-    log "Merging SFT video LoRA..."
-    $VENV_PYTHON src/merge_lora.py \
-        --model-path "$SFT_VIDEO_OUT" \
-        --model-base "$SFT_VIDEO_BASE" \
-        --save-model-path "$SFT_VIDEO_MERGED" \
-        --safe-serialization
-    log "SFT video merged to $SFT_VIDEO_MERGED"
-else
-    log "SFT video merged already exists at $SFT_VIDEO_MERGED, skipping."
-fi
-
-# ────────────────────────────────────────────────────────────
-# 8. STAGE 3: GRPO on clips (base = merged SFT video)
-# ────────────────────────────────────────────────────────────
-GRPO_CLIP_BASE="$SFT_VIDEO_MERGED"
-GRPO_CLIP_OUT="${OUTPUT_ROOT}/grpo_clip_lora"
-
-if [ ! -f "${GRPO_CLIP_OUT}/adapter_config.json" ]; then
-    run_training "GRPO-clip" \
-        src/train/train_grpo.py \
-        --deepspeed "$DEEPSPEED_CONFIG" \
-        --model_id "$GRPO_CLIP_BASE" \
-        --data_path "$DATA_PREFIX/grpo_train_clip.json" \
-        --image_folder dataset \
-        --output_dir "$GRPO_CLIP_OUT" \
-        --bits "$BITS" \
-        --lora_enable True \
-        --vision_lora True \
-        --use_dora False \
-        --lora_rank "$LORA_RANK" \
-        --lora_alpha "$LORA_ALPHA" \
-        --lora_dropout "$LORA_DROPOUT" \
-        --num_lora_modules -1 \
-        --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
-        --freeze_vision_tower True \
-        --freeze_llm True \
-        --freeze_merger False \
-        --bf16 True --fp16 False --tf32 True \
-        --disable_flash_attn2 False \
-        --use_liger_kernel True \
-        --loss_type dapo \
-        --num_train_epochs "$EPOCHS_GRPO" \
-        --num_generations "$NUM_GENERATIONS" \
-        --per_device_train_batch_size 1 \
-        --gradient_accumulation_steps "$GRAD_ACCUM" \
-        --max_completion_length "$MAX_COMPLETION_LENGTH" \
-        --learning_rate "$GRPO_LR" \
-        --vision_lr "$VISION_LR" \
-        --merger_lr "$MERGER_LR" \
-        --beta "$BETA" \
-        --temperature "$TEMPERATURE" \
-        --top_p "$TOP_P" \
-        --weight_decay 0.1 \
-        --warmup_steps 10 \
-        --lr_scheduler_type cosine \
-        --video_min_pixels "$VIDEO_MIN_PIXELS" \
-        --video_max_pixels "$VIDEO_MAX_PIXELS" \
-        $VIDEO_FRAME_ARGS \
-        --gradient_checkpointing True \
-        --lazy_preprocess True \
-        --remove_unused_columns False \
-        --dataloader_num_workers 4 \
-        --logging_steps 1 \
         --save_strategy epoch \
         --save_total_limit 3 \
         --report_to "$REPORT_TO"
 else
-    log "GRPO-clip already exists at $GRPO_CLIP_OUT, skipping."
+    log "GRPO already exists at $GRPO_OUT, skipping."
 fi
 
-# Merge GRPO clip (optional intermediate merge)
-GRPO_CLIP_MERGED="${OUTPUT_ROOT}/grpo_clip_merged"
 
-if [ ! -f "${GRPO_CLIP_MERGED}/config.json" ]; then
-    log "Merging GRPO clip LoRA..."
+# ────────────────────────────────────────────────────────────
+# 7. FINAL MERGE: GRPO adapter
+# ────────────────────────────────────────────────────────────
+GRPO_MERGED="${OUTPUT_ROOT}/grpo_merged"
+
+if [ ! -f "${GRPO_MERGED}/config.json" ]; then
+    log "Final merge: GRPO LoRA..."
     $VENV_PYTHON src/merge_lora.py \
-        --model-path "$GRPO_CLIP_OUT" \
-        --model-base "$GRPO_CLIP_BASE" \
-        --save-model-path "$GRPO_CLIP_MERGED" \
+        --model-path "$GRPO_OUT" \
+        --model-base "$GRPO_BASE" \
+        --save-model-path "$GRPO_MERGED" \
         --safe-serialization
-    log "GRPO clip merged to $GRPO_CLIP_MERGED"
-fi
-
-# ────────────────────────────────────────────────────────────
-# 9. STAGE 4: GRPO on videos (base = merged GRPO clip)
-# ────────────────────────────────────────────────────────────
-GRPO_VIDEO_BASE="${GRPO_CLIP_MERGED}"
-GRPO_VIDEO_OUT="${OUTPUT_ROOT}/grpo_video_lora"
-
-if [ ! -f "${GRPO_VIDEO_OUT}/adapter_config.json" ]; then
-    run_training "GRPO-video" \
-        src/train/train_grpo.py \
-        --deepspeed "$DEEPSPEED_CONFIG" \
-        --model_id "$GRPO_VIDEO_BASE" \
-        --data_path "$DATA_PREFIX/grpo_train_video.json" \
-        --image_folder dataset \
-        --output_dir "$GRPO_VIDEO_OUT" \
-        --bits "$BITS" \
-        --lora_enable True \
-        --vision_lora True \
-        --use_dora False \
-        --lora_rank "$LORA_RANK" \
-        --lora_alpha "$LORA_ALPHA" \
-        --lora_dropout "$LORA_DROPOUT" \
-        --num_lora_modules -1 \
-        --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
-        --freeze_vision_tower True \
-        --freeze_llm True \
-        --freeze_merger False \
-        --bf16 True --fp16 False --tf32 True \
-        --disable_flash_attn2 False \
-        --use_liger_kernel True \
-        --loss_type dapo \
-        --num_train_epochs "$EPOCHS_GRPO" \
-        --num_generations "$NUM_GENERATIONS" \
-        --per_device_train_batch_size 1 \
-        --gradient_accumulation_steps "$GRAD_ACCUM" \
-        --max_completion_length "$MAX_COMPLETION_LENGTH" \
-        --learning_rate "$GRPO_LR" \
-        --vision_lr "$VISION_LR" \
-        --merger_lr "$MERGER_LR" \
-        --beta "$BETA" \
-        --temperature "$TEMPERATURE" \
-        --top_p "$TOP_P" \
-        --weight_decay 0.1 \
-        --warmup_steps 10 \
-        --lr_scheduler_type cosine \
-        --video_min_pixels "$VIDEO_MIN_PIXELS" \
-        --video_max_pixels "$VIDEO_MAX_PIXELS" \
-        $VIDEO_FRAME_ARGS \
-        --gradient_checkpointing True \
-        --lazy_preprocess True \
-        --remove_unused_columns False \
-        --dataloader_num_workers 4 \
-        --logging_steps 1 \
-        --save_strategy epoch \
-        --save_total_limit 3 \
-        --report_to "$REPORT_TO"
-else
-    log "GRPO-video already exists at $GRPO_VIDEO_OUT, skipping."
-fi
-
-# ────────────────────────────────────────────────────────────
-# 10. FINAL MERGE
-# ────────────────────────────────────────────────────────────
-GRPO_VIDEO_MERGED="${OUTPUT_ROOT}/grpo_video_merged"
-
-if [ ! -f "${GRPO_VIDEO_MERGED}/config.json" ]; then
-    log "Final merge: GRPO video LoRA..."
-    $VENV_PYTHON src/merge_lora.py \
-        --model-path "$GRPO_VIDEO_OUT" \
-        --model-base "$GRPO_VIDEO_BASE" \
-        --save-model-path "$GRPO_VIDEO_MERGED" \
-        --safe-serialization
-    log "Final model at $GRPO_VIDEO_MERGED"
+    log "Final model at $GRPO_MERGED"
 fi
 
 # ────────────────────────────────────────────────────────────
@@ -470,6 +347,6 @@ fi
 # ────────────────────────────────────────────────────────────
 log "======================================================"
 log "Training pipeline complete!"
-log "Final model: $GRPO_VIDEO_MERGED"
+log "Final model: $GRPO_MERGED"
 log "Intermediate outputs in: $OUTPUT_ROOT/"
 log "======================================================"

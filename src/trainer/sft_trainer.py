@@ -15,7 +15,9 @@ from transformers.trainer import (
     SaveStrategy,
     has_length,
 )
-from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+from transformers.pytorch_utils import (
+    ALL_LAYERNORM_LAYERS
+)
 from transformers.trainer_utils import EvalLoopOutput
 from torch.utils.data import DataLoader
 from train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lora_maybe_zero_3
@@ -23,17 +25,11 @@ from train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lo
 from constants import IGNORE_INDEX
 
 
-_DS_AVAILABLE = False
-try:
+def maybe_zero_3(param, ignore_status=False, name=None):
     from deepspeed import zero
     from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
-    _DS_AVAILABLE = True
-except Exception:
-    pass
 
-
-def maybe_zero_3(param, ignore_status=False, name=None):
-    if _DS_AVAILABLE and hasattr(param, "ds_id"):
+    if hasattr(param, "ds_id"):
         if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
             if not ignore_status:
                 print(name, "no ignore status")
@@ -46,6 +42,7 @@ def maybe_zero_3(param, ignore_status=False, name=None):
 
 @dataclass
 class GenerativeEvalPrediction:
+    """Container for generative evaluation predictions."""
     predictions: List[str]
     references: List[str]
 
@@ -54,8 +51,15 @@ class QwenSFTTrainer(Trainer):
 
     def __init__(self, *args, **kwargs):
         super(QwenSFTTrainer, self).__init__(*args, **kwargs)
+        # processing_class is set by parent Trainer from the constructor argument
+        # We can access it via self.processing_class (same as processor)
 
     def create_optimizer(self):
+        """
+        Setup the optimizer.
+        We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
+        Trainer's init through `optimizers`, or subclass and override this method in a subclass.
+        """
         if is_sagemaker_mp_enabled():
             return super().create_optimizer()
 
@@ -151,6 +155,10 @@ class QwenSFTTrainer(Trainer):
         return self.optimizer
 
     def _save_checkpoint(self, model, trial):
+        # In all cases, including ddp/dp/deepspeed, self.model is always a reference to the model we
+        # want to save except FullyShardedDDP.
+        # assert unwrap_model(model) is self.model, "internal model should be a reference to self.model"
+
         super()._save_checkpoint(model, trial)
 
         if not self.args.lora_enable:
@@ -164,6 +172,7 @@ class QwenSFTTrainer(Trainer):
             self.model.named_parameters(),
             require_grad_only=True,
         )
+
 
         if self.args.should_save:
             torch.save(non_lora, os.path.join(output_dir, "non_lora_state_dict.bin"))
@@ -181,37 +190,67 @@ class QwenSFTTrainer(Trainer):
             return (loss, None, None)
         return (loss, logits, labels)
 
-    def _extract_prompt_and_reference(self, input_ids, labels, tokenizer):
+    def _extract_prompt_and_reference(
+        self,
+        input_ids: torch.Tensor,
+        labels: torch.Tensor,
+        tokenizer
+    ) -> tuple:
+        """
+        Extract prompt (question only) and reference (answer) from input_ids and labels.
+
+        In SFT dataset, labels == IGNORE_INDEX for prompt tokens, and labels == token_id for answer tokens.
+
+        Returns:
+            prompt_ids: tensor of prompt token ids (question part only)
+            reference_text: decoded answer text
+        """
+        # Find where labels are not IGNORE_INDEX (answer starts)
         label_mask = labels != IGNORE_INDEX
 
         if label_mask.any():
             answer_start_idx = label_mask.nonzero(as_tuple=True)[0][0].item()
         else:
+            # No answer found, use full input as prompt
             answer_start_idx = len(input_ids)
 
+        # Extract prompt (everything before answer)
         prompt_ids = input_ids[:answer_start_idx]
+
+        # Extract reference answer
         answer_ids = labels[label_mask]
         reference_text = tokenizer.decode(answer_ids, skip_special_tokens=True)
 
         return prompt_ids, reference_text
 
-    def _prepare_generation_inputs(self, batch_prompt_ids, original_inputs, tokenizer, device):
+    def _prepare_generation_inputs(
+        self,
+        batch_prompt_ids: List[torch.Tensor],
+        original_inputs: Dict[str, torch.Tensor],
+        tokenizer,
+        device
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Prepare inputs for generation by padding prompts and including vision inputs.
+        """
         batch_size = len(batch_prompt_ids)
 
+        # Pad prompts to same length (left padding for generation)
         max_prompt_len = max(p.shape[0] for p in batch_prompt_ids)
 
         padded_prompts = torch.full(
             (batch_size, max_prompt_len),
             tokenizer.pad_token_id,
             dtype=batch_prompt_ids[0].dtype,
-            device=device,
+            device=device
         )
         attention_masks = torch.zeros(
             (batch_size, max_prompt_len),
             dtype=torch.long,
-            device=device,
+            device=device
         )
 
+        # Right padding (Qwen uses right padding)
         for i, prompt in enumerate(batch_prompt_ids):
             prompt_len = len(prompt)
             padded_prompts[i, :prompt_len] = prompt
@@ -233,6 +272,7 @@ class QwenSFTTrainer(Trainer):
                 padded_mm_token_type_ids[i, :prompt_len] = original_inputs["mm_token_type_ids"][i, :prompt_len]
             gen_inputs["mm_token_type_ids"] = padded_mm_token_type_ids
 
+        # Add vision inputs if present
         if "pixel_values" in original_inputs:
             gen_inputs["pixel_values"] = original_inputs["pixel_values"]
         if "image_grid_thw" in original_inputs:
@@ -246,23 +286,44 @@ class QwenSFTTrainer(Trainer):
 
         return gen_inputs
 
-    def evaluation_loop(self, dataloader, description, prediction_loss_only=None, ignore_keys=None, metric_key_prefix="eval"):
+    def evaluation_loop(
+        self,
+        dataloader: DataLoader,
+        description: str,
+        prediction_loss_only: Optional[bool] = None,
+        ignore_keys: Optional[List[str]] = None,
+        metric_key_prefix: str = "eval",
+    ) -> EvalLoopOutput:
+        """
+        Override evaluation_loop to support generation-based evaluation.
+
+        If compute_metrics is provided and prediction_loss_only is False,
+        this method will use model.generate() to produce text outputs
+        and pass them to compute_metrics as GenerativeEvalPrediction.
+
+        Your compute_metrics function should accept either:
+        - GenerativeEvalPrediction with .predictions (List[str]) and .references (List[str])
+        - Or a dict with 'predictions' and 'references' keys
+        """
         args = self.args
 
+        # Determine if we should do generation-based evaluation
         prediction_loss_only = (
             prediction_loss_only if prediction_loss_only is not None
             else args.prediction_loss_only
         )
 
+        # If no compute_metrics or loss_only, fall back to default behavior
         if prediction_loss_only or self.compute_metrics is None:
             return super().evaluation_loop(
                 dataloader,
                 description,
                 prediction_loss_only,
                 ignore_keys,
-                metric_key_prefix,
+                metric_key_prefix
             )
 
+        # Generation-based evaluation
         logger.info(f"\n***** Running {description} (Generation Mode) *****")
         if has_length(dataloader):
             logger.info(f"  Num examples = {self.num_examples(dataloader)}")
@@ -271,8 +332,10 @@ class QwenSFTTrainer(Trainer):
         model = self._wrap_model(self.model, training=False, dataloader=dataloader)
         model.eval()
 
+        # Get processor/tokenizer
         tokenizer = self.processing_class.tokenizer
 
+        # Setup generation config
         generation_config = GenerationConfig(
             do_sample=False,
             max_new_tokens=getattr(args, 'generation_max_new_tokens', 512),
@@ -280,6 +343,7 @@ class QwenSFTTrainer(Trainer):
             eos_token_id=tokenizer.eos_token_id,
         )
 
+        # Unwrap model for generation
         unwrapped_model = self.accelerator.unwrap_model(model)
 
         all_predictions = []
@@ -287,19 +351,23 @@ class QwenSFTTrainer(Trainer):
         all_losses = []
 
         for step, inputs in enumerate(dataloader):
+            # Move inputs to device
             inputs = self._prepare_inputs(inputs)
 
             batch_input_ids = inputs["input_ids"]
             batch_labels = inputs["labels"]
             batch_size = batch_input_ids.shape[0]
 
+            # Compute loss using forward pass (optional, for logging)
             with torch.no_grad():
                 outputs = model(**inputs)
                 if hasattr(outputs, "loss") and outputs.loss is not None:
                     loss = outputs.loss.detach()
+                    # Gather loss across processes
                     loss = self.accelerator.gather(loss.repeat(batch_size))
                     all_losses.append(loss.cpu())
 
+            # Extract prompts and references for each item in batch
             batch_prompt_ids = []
             batch_references = []
 
@@ -307,24 +375,27 @@ class QwenSFTTrainer(Trainer):
                 prompt_ids, reference_text = self._extract_prompt_and_reference(
                     batch_input_ids[i],
                     batch_labels[i],
-                    tokenizer,
+                    tokenizer
                 )
                 batch_prompt_ids.append(prompt_ids)
                 batch_references.append(reference_text)
 
+            # Prepare generation inputs
             gen_inputs = self._prepare_generation_inputs(
                 batch_prompt_ids,
                 inputs,
                 tokenizer,
-                batch_input_ids.device,
+                batch_input_ids.device
             )
 
+            # Generate
             with torch.no_grad():
                 generated_ids = unwrapped_model.generate(
                     **gen_inputs,
                     generation_config=generation_config,
                 )
 
+            # Decode generated tokens (excluding prompt)
             for i in range(batch_size):
                 prompt_len = len(batch_prompt_ids[i])
                 new_tokens = generated_ids[i][prompt_len:]
@@ -333,24 +404,30 @@ class QwenSFTTrainer(Trainer):
 
             all_references.extend(batch_references)
 
+            # Log progress
             if step % 10 == 0:
                 logger.info(f"  Eval step {step}/{len(dataloader)}")
 
+        # Gather predictions across processes if distributed
         if self.args.world_size > 1:
+            # For distributed evaluation, we need to gather all predictions
             all_predictions = self._gather_predictions(all_predictions)
             all_references = self._gather_predictions(all_references)
 
+        # Compute metrics
         eval_prediction = GenerativeEvalPrediction(
             predictions=all_predictions,
-            references=all_references,
+            references=all_references
         )
 
         metrics = self.compute_metrics(eval_prediction)
 
+        # Add loss to metrics if available
         if all_losses:
             avg_loss = torch.cat(all_losses).mean().item()
             metrics[f"{metric_key_prefix}_loss"] = avg_loss
 
+        # Prefix all metrics
         metrics = {
             f"{metric_key_prefix}_{k}" if not k.startswith(metric_key_prefix) else k: v
             for k, v in metrics.items()
@@ -366,6 +443,7 @@ class QwenSFTTrainer(Trainer):
         )
 
     def _gather_predictions(self, predictions: List[str]) -> List[str]:
+        """Gather string predictions across all processes."""
         import torch.distributed as dist
 
         if not dist.is_initialized():
@@ -373,9 +451,11 @@ class QwenSFTTrainer(Trainer):
 
         world_size = dist.get_world_size()
 
+        # Gather all predictions to rank 0
         gathered = [None] * world_size
         dist.all_gather_object(gathered, predictions)
 
+        # Flatten the list
         all_predictions = []
         for preds in gathered:
             all_predictions.extend(preds)

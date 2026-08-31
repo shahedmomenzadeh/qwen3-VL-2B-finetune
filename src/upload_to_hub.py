@@ -4,7 +4,7 @@ upload_to_hub.py — Upload a local model directory to the Hugging Face Hub.
 
 Usage (standalone):
     python src/upload_to_hub.py \\
-        --local-dir output/sft_video_merged \\
+        --local-dir output/sft_merged \\
         --repo-id your-username/qwen3-vl-2b-cataract-sft \\
         [--private] \\
         [--token hf_xxxx]
@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--local-dir",
         required=True,
-        help="Local directory containing the model to upload (e.g. output/sft_video_merged).",
+        help="Local directory containing the model to upload (e.g. output/sft_merged).",
     )
     p.add_argument(
         "--repo-id",

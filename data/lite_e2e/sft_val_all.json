@@ -1,0 +1,240 @@
+[
+  {
+    "id": "WfKofIhTbOY_clip_01_sft_0",
+    "video": "Validation/WfKofIhTbOY/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nDescribe what is happening in this cataract surgical video clip."
+      },
+      {
+        "from": "gpt",
+        "value": "An irrigation/aspiration (I/A) handpiece with a silicone tip is used to vacuum residual lens cortical fibers and polish the surface of the posterior capsule within the capsular bag."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_01_sft_1",
+    "video": "Validation/WfKofIhTbOY/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich stage of the cataract procedure is being demonstrated in this video clip?\nA) Phacoemulsification of the nucleus\nB) Cortical irrigation and aspiration\nC) Continuous curvilinear capsulorhexis\nD) Corneal wound suturing\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The surgeon is seen using a specialized handpiece to remove the remaining soft lens fibers and clean the capsule after the main lens nucleus has been removed, which is the cortical irrigation and aspiration step. Therefore the answer is B) Cortical irrigation and aspiration."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_01_sft_2",
+    "video": "Validation/WfKofIhTbOY/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat is the surgeon specifically doing to the posterior capsule in this segment?\nA) Creating a secondary opening in the center\nB) Injecting an intraocular lens into the bag\nC) Polishing the surface to remove residual fibers\nD) Staining the capsule with Trypan Blue\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "In the video, the tip of the instrument is moved across the posterior capsule to vacuum up small cortical fragments and polish the surface, ensuring a clear visual axis for the patient. Therefore the answer is C) Polishing the surface to remove residual fibers."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_01_sft_3",
+    "video": "Validation/WfKofIhTbOY/clip_01.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich surgical instrument is visible and active throughout this clip?\nA) Irrigation/aspiration (I/A) handpiece\nB) Capsulorhexis cystotome (bent needle)\nC) Keratome blade (disposable)\nD) IOL injector (foldable lens)\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The tool being used features a silicone tip and provides simultaneous fluid irrigation and suction to clear the capsular bag, identifying it as an irrigation/aspiration handpiece. Therefore the answer is A) Irrigation/aspiration (I/A) handpiece."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_02_sft_0",
+    "video": "Validation/WfKofIhTbOY/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nDescribe what is happening in this cataract surgical video clip."
+      },
+      {
+        "from": "gpt",
+        "value": "A curved cannula is used to mechanically polish the posterior surface of the anterior capsule leaflet, removing lens epithelial cells to prevent post-operative capsular phimosis and opacification. Dislodged dark specks (likely cells or pigment) are visible."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_02_sft_1",
+    "video": "Validation/WfKofIhTbOY/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich phase of the cataract procedure is being performed in this video clip?\nA) Phacoemulsification of the nucleus\nB) Cortical irrigation and aspiration with capsule polishing\nC) Creation of the corneal incision\nD) Centering of the intraocular lens\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "In the video, the surgeon is seen cleaning the remaining material and cells from the capsular bag after the main lens has been removed, which is characteristic of the cortical irrigation, aspiration, and polishing phase. Therefore the answer is B) Cortical irrigation and aspiration with capsule polishing."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_02_sft_2",
+    "video": "Validation/WfKofIhTbOY/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat visual evidence indicates that the surgeon is successfully cleaning the capsule during the sweeping motion?\nA) The appearance of small dark specks being dislodged\nB) The sudden clearing of the red reflex\nC) The shrinkage of the pupil size\nD) The injection of blue dye into the chamber\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "As the instrument moves against the posterior surface of the anterior capsule, small dark particles and epithelial cells are seen being scraped away, indicating that the polishing technique is effectively removing potential sources of postoperative opacification. Therefore the answer is A) The appearance of small dark specks being dislodged."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_02_sft_3",
+    "video": "Validation/WfKofIhTbOY/clip_02.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat specific instrument is visible being used to sweep the underside of the capsule?\nA) Utrata forceps\nB) Phacoemulsification tip\nC) Capsule polisher or sweeper\nD) Sinskey hook\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The surgeon is using a curved, blunt-tipped cannula specifically designed to reach under the anterior capsule leaflet to mechanically polish the bag, which is a capsule polisher or sweeper. Therefore the answer is C) Capsule polisher or sweeper."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_03_sft_0",
+    "video": "Validation/WfKofIhTbOY/clip_03.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nDescribe what is happening in this cataract surgical video clip."
+      },
+      {
+        "from": "gpt",
+        "value": "After insertion of the intraocular lens (IOL), the I/A handpiece is used to engage and rotate the IOL optic within the capsular bag. This maneuver dislodges any remaining cortical material trapped in the equatorial region of the bag."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_03_sft_1",
+    "video": "Validation/WfKofIhTbOY/clip_03.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich phase of the cataract procedure is currently being performed in this video clip?\nA) Phacoemulsification of the nucleus\nB) IOL positioning\nC) Continuous curvilinear capsulorhexis\nD) Cortical aspiration\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "In the video, the intraocular lens has already been placed inside the eye. The surgeon is now seen adjusting and rotating the lens optic within the capsular bag to ensure it is centered and properly seated. Therefore the answer is B) IOL positioning."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_03_sft_2",
+    "video": "Validation/WfKofIhTbOY/clip_03.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat is the primary purpose of the surgeon rotating the IOL optic within the capsular bag as shown in the clip?\nA) To verify the size of the pupil\nB) To ensure the lens is upside down\nC) To dislodge remaining cortical material trapped in the equatorial region\nD) To seal the corneal incision\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The surgeon is seen using the tip of the instrument to engage and spin the lens. This motion is intended to free any residual lens fibers or cortical material that might be stuck behind the lens or in the periphery of the bag. Therefore the answer is C) To dislodge remaining cortical material trapped in the equatorial region."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_03_sft_3",
+    "video": "Validation/WfKofIhTbOY/clip_03.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich surgical instrument is being used to manipulate the lens and maintain the anterior chamber in this segment?\nA) Keratome blade\nB) Irrigation/aspiration (I/A) handpiece\nC) Capsulorhexis forceps\nD) IOL injector\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The instrument visible in the eye is the I/A handpiece, which provides the necessary fluid irrigation to keep the eye pressurized while its tip is used to physically rotate the IOL optic. Therefore the answer is B) Irrigation/aspiration (I/A) handpiece."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_04_sft_0",
+    "video": "Validation/WfKofIhTbOY/clip_04.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nDescribe what is happening in this cataract surgical video clip."
+      },
+      {
+        "from": "gpt",
+        "value": "The tip of the I/A handpiece is placed behind the IOL optic to aspirate any remaining viscoelastic and liberated lens fibers from the space between the IOL and the posterior capsule, ensuring a clean capsular bag."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_04_sft_1",
+    "video": "Validation/WfKofIhTbOY/clip_04.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich surgical step is currently being performed in this video clip?\nA) Hydrodissection\nB) Viscoelastic removal\nC) Phacoemulsification\nD) Primary incision creation\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "In the video, the surgeon is seen using an aspiration tool to clear out the remaining thick, clear substance from behind the newly implanted lens, which is the process of removing the viscoelastic material. Therefore the answer is B) Viscoelastic removal."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_04_sft_2",
+    "video": "Validation/WfKofIhTbOY/clip_04.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhat technique is the surgeon using to ensure the space behind the intraocular lens (IOL) is clean?\nA) Rotating the lens 360 degrees\nB) Injecting balanced salt solution into the anterior chamber\nC) Placing the instrument tip behind the IOL optic to aspirate fibers and viscoelastic\nD) Polishing the anterior capsule with a diamond-dusted tool\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The footage shows the surgeon carefully maneuvering the tip of the irrigation/aspiration handpiece underneath the lens optic. This is done to reach the space between the lens and the posterior capsule to remove any trapped lens fibers or viscoelastic. Therefore the answer is C) Placing the instrument tip behind the IOL optic to aspirate fibers and viscoelastic."
+      }
+    ]
+  },
+  {
+    "id": "WfKofIhTbOY_clip_04_sft_3",
+    "video": "Validation/WfKofIhTbOY/clip_04.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nWhich surgical instrument is being utilized to aspirate materials in this clip?\nA) Irrigation/aspiration (I/A) handpiece\nB) Phacoemulsification probe\nC) Utrata forceps\nD) Capsular tension ring inserter\n\nProvide your reasoning first, then state your answer."
+      },
+      {
+        "from": "gpt",
+        "value": "The instrument visible in the eye is the irrigation/aspiration handpiece, identifiable by its specific tip designed for fluid exchange and suction to clean the capsular bag. Therefore the answer is A) Irrigation/aspiration (I/A) handpiece."
+      }
+    ]
+  },
+  {
+    "id": "full_WfKofIhTbOY_full_video_sft_0",
+    "video": "Validation/WfKofIhTbOY/full_video.mp4",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "<video>\nProvide a detailed timestamped narration of this surgical procedure."
+      },
+      {
+        "from": "gpt",
+        "value": "[00:00 - 00:28] cortical irrigation and aspiration (i/a): An irrigation/aspiration (I/A) handpiece with a silicone tip is used to vacuum residual lens cortical fibers and polish the surface of the posterior capsule within the capsular bag.\n[00:29 - 00:35] cortical irrigation and aspiration (i/a): A curved cannula is used to mechanically polish the posterior surface of the anterior capsule leaflet, removing lens epithelial cells to prevent post-operative capsular phimosis and opacification. Dislodged dark specks (likely cells or pigment) are visible.\n[00:36 - 00:43] iol positioning: After insertion of the intraocular lens (IOL), the I/A handpiece is used to engage and rotate the IOL optic within the capsular bag. This maneuver dislodges any remaining cortical material trapped in the equatorial region of the bag.\n[00:43 - 00:59] viscoelastic removal: The tip of the I/A handpiece is placed behind the IOL optic to aspirate any remaining viscoelastic and liberated lens fibers from the space between the IOL and the posterior capsule, ensuring a clean capsular bag."
+      }
+    ]
+  }
+]

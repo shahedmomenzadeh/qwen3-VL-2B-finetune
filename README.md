@@ -2,10 +2,10 @@
 
 Fine-tune **Qwen/Qwen3-VL-2B-Instruct** with LoRA + 4-bit QLoRA on cataract surgery video data (clip-level descriptions, full-video narration, and multi-choice question answering for RL).
 
-The pipeline has two stages, each with a clip-level and full-video-level training pass:
+The pipeline has one combined SFT pass followed by one clip-level GRPO pass:
 
 1. **SFT** (Supervised Fine-Tuning) on visual description / chain-of-thought QA
-2. **GRPO** (Group Relative Policy Optimization) on multi-choice reward data
+2. **GRPO** (Group Relative Policy Optimization) on clip-level YouTube MCQs and phase recognition
 
 The codebase is derived from [`Qwen-VL-Series-Finetune`](https://github.com/) but adapted specifically for Qwen3-VL and the cataract surgery dataset.
 
@@ -18,15 +18,15 @@ The codebase is derived from [`Qwen-VL-Series-Finetune`](https://github.com/) bu
 git clone https://github.com/shahedmomenzadeh/qwen3-VL-2B-finetune.git
 cd qwen3-VL-2B-finetune
 
-# 2. Edit train_sft.sh: set the three Google Drive IDs (lines 18-20)
+# 2. Ensure dataset_sft/ and dataset_grpo/ contain Train and Validation splits
 
-# 3. Run — sets up env, downloads data, prepares JSONs, trains
+# 3. Run — sets up env, prepares JSONs from the separated datasets, and trains
 bash train_sft.sh                              # full training (48 GB VRAM)
 SUBSET_RATIO=0.3 bash train_sft.sh              # 30% subsample (smoke test)
 BITS=16 NFRAMES=48 bash train_sft.sh            # 16-bit LoRA, no quantization
 ```
 
-The script is **idempotent** — if `dataset/`, `.venv/`, or `output/` already exist, the corresponding step is skipped.
+The script is **idempotent** — if `dataset_sft/`, `.venv/`, or `output/` already exist, the corresponding step is skipped.
 
 ---
 
@@ -35,15 +35,13 @@ The script is **idempotent** — if `dataset/`, `.venv/`, or `output/` already e
 | Step | Action |
 |------|--------|
 | 1 | Install `uv` (if missing) → create `.venv` → install PyTorch (cu130) + transformers (GitHub main) + peft + trl ≥ 1.8.0 + liger-kernel + bitsandbytes + qwen-vl-utils + gdown + optional flash-attn |
-| 2 | Download `Train.zip` / `Validation.zip` / `Test.zip` from Google Drive → unzip into `dataset/`. **Skips any split already present on disk.** |
-| 3 | Run `prepare_sft.py` ×4 (clip+video × train+val) → generates LLaVA-format JSONs with split-prefixed video paths and unique sample IDs |
-| 4 | If `SUBSET_RATIO < 1.0`: subsample training JSONs with seeded shuffle (eval is **not** subsampled) |
-| 5 | **SFT Stage 1** — clip training → `output/sft_clip_lora/` |
-| 6 | Merge Stage 1 LoRA → `output/sft_clip_merged/` |
-| 7 | **SFT Stage 2** — full-video training (base = merged clips) → `output/sft_video_lora/` |
-| 8 | Merge Stage 2 LoRA → `output/sft_video_merged/` (**final SFT model**) |
+| 2 | Verify `dataset_sft/Train` and `dataset_sft/Validation` |
+| 3 | Run `prepare_sft.py` on `dataset_sft` (combined clips + full videos) → generates LLaVA-format JSONs with split-prefixed video paths and unique sample IDs |
+| 4 | If `SUBSET_RATIO < 1.0`: subsample training JSON with seeded shuffle (eval is **not** subsampled) |
+| 5 | **SFT** — clip + full-video training (combined) → `output/sft_lora/` |
+| 6 | Merge SFT LoRA → `output/sft_merged/` (**final SFT model**) |
 
-After SFT, the same flow repeats for GRPO via `train.sh` (clips → merge → videos → merge).
+After SFT, `train.sh` runs GRPO on `dataset_grpo`, including YouTube MCQs and the four phase tasks. There is no full-video GRPO task.
 
 ---
 
@@ -52,7 +50,7 @@ After SFT, the same flow repeats for GRPO via `train.sh` (clips → merge → vi
 ```
 qwen3-VL-2B-finetune/
 ├── train_sft.sh              # End-to-end SFT pipeline (env + data + train)
-├── train.sh                  # End-to-end SFT + GRPO pipeline (full 4-stage)
+├── train.sh                  # End-to-end SFT + all dataset_grpo GRPO tasks
 ├── test_sft_run.sh           # Smoke test on 1 video (8 GB VRAM)
 ├── setup.sh                  # Manual env setup (called by train_sft.sh)
 ├── ISSUES_REPORT.md          # All bugs found + fixes applied
@@ -74,7 +72,7 @@ qwen3-VL-2B-finetune/
 │   └── train/
 │       ├── train_sft.py      # SFT entry point (QLoRA + LoRA setup)
 │       ├── train_grpo.py     # GRPO entry point
-│       ├── reward_funcs.py   # deterministic_reward, llm_judge_reward, format_reward
+│       ├── reward_funcs.py   # deterministic YouTube + phase answer rewards
 │       ├── train_utils.py    # DeepSpeed-OPTIONAL state-dict helpers
 │       ├── monkey_patch_forward.py  # Qwen3-VL mixed-modality forward
 │       └── monkey_patch_vision.py   # Qwen2.5-VL vision patch (legacy)
@@ -101,9 +99,12 @@ qwen3-VL-2B-finetune/
 │
 ├── check_lora_weights.py     # Verifies LoRA B went from zero to non-zero
 │
-├── dataset/                  # Raw dataset (NOT in git, downloaded from Drive)
-│   ├── README.md             # Dataset schema
-│   ├── Train/                # YT_ID/clip_xx.mp4 + *_sft.jsonl + *_grpo.jsonl
+├── dataset_sft/              # Separated SFT dataset
+│   ├── Train/                # clips, full videos, and *_sft.jsonl
+│   ├── Validation/
+│   └── Test/
+├── dataset_grpo/             # Separated GRPO dataset
+│   ├── Train/                # YouTube MCQs and phase-task clips
 │   ├── Validation/
 │   └── Test/
 │
@@ -165,6 +166,12 @@ All have sensible defaults for a 48 GB single-GPU server. Override any via env v
 | `SAVE_TOTAL_LIMIT` | 3 | |
 | `PER_DEVICE_EVAL_BATCH_SIZE` | 1 | |
 
+### Dataset roots
+| Var | Default | Description |
+|-----|---------|-------------|
+| `SFT_DATASET_ROOT` | `dataset_sft` | Separated SFT dataset root |
+| `GRPO_DATASET_ROOT` | `dataset_grpo` | Separated GRPO dataset root |
+
 ### Misc
 | Var | Default | Description |
 |-----|---------|-------------|
@@ -179,29 +186,38 @@ All have sensible defaults for a 48 GB single-GPU server. Override any via env v
 
 ## Dataset
 
-The dataset follows the schema in [`dataset/README.md`](dataset/README.md):
+The active training data is separated by task:
 
 ```
-dataset/
+dataset_sft/
 ├── Train/
 │   ├── <YT_ID>/
 │   │   ├── full_video.mp4
-│   │   ├── full_video_sft.jsonl     # 2 lines: timestamped narration + step-ordering CoT
-│   │   ├── full_video_grpo.jsonl    # 1 line: sequence-ordering MCQ
+│   │   ├── full_video_sft.jsonl     # 1 line: timestamped narration
 │   │   ├── clip_01.mp4
 │   │   ├── clip_01_sft.jsonl        # 1-4 lines: description + CoT MCQ
-│   │   ├── clip_01_grpo.jsonl       # 1-3 lines: step / instrument / visual MCQ
 │   │   └── ...
 ├── Validation/
 └── Test/
 ```
 
-The dataset is **not included in this repo** (too large). It's distributed via Google Drive (set the IDs in `train_sft.sh`).
+Phase folders are named `PH_*`. `dataset_sft` contains one grounded visual
+description per phase clip. `dataset_grpo` contains four deterministic phase
+tasks (`boundary_detection`, `temporal_localization`, `timestamp_to_phase`, and
+`contextual_phase_recognition`) plus the three YouTube MCQ tasks.
+
+The preparation scripts preserve every non-empty annotation line. They warn
+when a YouTube clip differs from the expected 4 SFT / 3 GRPO records, or when
+a phase clip differs from its expected single record.
+
+The separated datasets are expected to be present locally; the training scripts
+do not fall back to the legacy `dataset/` directory.
 
 ### Dataset format
 - **SFT** samples are converted to LLaVA format: `{id, video, conversations: [{from:"human", value:"..."}, {from:"gpt", value:"..."}]}`
 - **GRPO** samples are converted to: `{id, video, conversations, correct_answer, question_type, reference_reasoning, reward_type}`
-- Video paths in the prepared JSONs are prefixed with the split name (e.g., `Train/<YT_ID>/clip_01.mp4`) so a single `image_folder=dataset` works for both train and eval
+- GRPO completions must be JSON with top-level `explanation` and task-specific `answer` keys
+- Video paths in the prepared JSONs are prefixed with the split name (e.g., `Train/<YT_ID>/clip_01.mp4`) so each stage can use its own dataset root
 
 ---
 
@@ -219,29 +235,38 @@ export HF_HOME=$PWD/hf_cache
 
 ### Data prep
 ```bash
-python data/prepare_sft.py --input-dir dataset/Train      --output data/sft_train_clip.json   --data-type clip
-python data/prepare_sft.py --input-dir dataset/Train      --output data/sft_train_video.json  --data-type full_video
-python data/prepare_sft.py --input-dir dataset/Validation --output data/sft_val_clip.json     --data-type clip
-python data/prepare_sft.py --input-dir dataset/Validation --output data/sft_val_video.json    --data-type full_video
+python data/prepare_sft.py --input-dir dataset_sft/Train      --output data/sft_train_dataset_sft.json --data-type all
+python data/prepare_sft.py --input-dir dataset_sft/Validation --output data/sft_val_dataset_sft.json   --data-type all
+python data/prepare_grpo.py --input-dir dataset_grpo/Train      --output data/grpo_train_dataset_grpo.json --data-type all
+python data/prepare_grpo.py --input-dir dataset_grpo/Validation --output data/grpo_val_dataset_grpo.json   --data-type all
 ```
 
-### SFT stage 1 (clips) + merge
+### SFT stage (clips + full videos) + merge
 ```bash
-bash scripts/finetune_sft_lora.sh        # → output/sft_clip_lora/
-bash scripts/merge_lora.sh               # → output/sft_clip_merged/
+bash scripts/finetune_sft_lora.sh        # → output/sft_lora/
+bash scripts/merge_lora.sh               # → output/sft_merged/
 ```
 
-### SFT stage 2 (full videos) + merge
+### GRPO stage (YouTube + phase tasks)
+
+The GRPO preparation combines the three YouTube MCQs per YouTube clip with the
+four deterministic phase-task types:
+
 ```bash
-MODEL_NAME=output/sft_clip_merged bash scripts/finetune_sft_lora.sh   # → output/sft_video_lora/
-bash scripts/merge_lora.sh               # → output/sft_video_merged/
-```
+DATA_PATH=data/grpo_train_dataset_grpo.json \
+EVAL_PATH=data/grpo_val_dataset_grpo.json \
+IMAGE_FOLDER=dataset_grpo \
+bash scripts/finetune_grpo_lora.sh        # → output/grpo_lora/
 
-### GRPO stages (similar, using `scripts/finetune_grpo_lora.sh`)
+MODEL_PATH=output/grpo_lora \
+MODEL_BASE=output/sft_merged \
+SAVE_MODEL_PATH=output/grpo_merged \
+bash scripts/merge_lora.sh                # → output/grpo_merged/
+```
 
 ### Full pipeline with GRPO
 ```bash
-bash train.sh                             # SFT + GRPO (4 stages total)
+bash train.sh                             # SFT + dataset_grpo GRPO
 ```
 
 ---
@@ -265,7 +290,7 @@ The base weights are **frozen** (4-bit quantized, requires_grad=False). Only the
 
 To verify training is actually happening, use [`check_lora_weights.py`](check_lora_weights.py):
 ```bash
-python check_lora_weights.py output/sft_clip_lora
+python check_lora_weights.py output/sft_lora
 # Verifies lora_B went from all-zeros (init) to non-zero (trained)
 ```
 
@@ -284,12 +309,10 @@ Fixed in current codebase:
 - ✅ TRL 1.8.0 migration (`use_liger_kernel`, `loss_type`, `liger_loss` renames; `max_prompt_length` removed)
 - ✅ DeepSpeed made optional (try/except import; `getattr` check)
 
-Known limitations (not yet fixed, GRPO-specific):
-- ⚠ **C2** — `deterministic_reward` regex case-broken (degrades to substring match; gives false positives for short answers in text containing the letter)
-- ⚠ **H3** — `llm_judge_reward` is keyword-overlap heuristic, not an actual teacher LLM
-- ⚠ **H5** — GRPO eval dataset hardcoded to None in `make_grpo_data_module`
-
-These do not affect SFT training; only GRPO.
+The GRPO reward path parses the strict JSON response format. YouTube MCQs use
+exact answer-letter rewards; phase tasks use boundary exponential decay,
+temporal IoU, exact phase matching, and a `0.05` valid-format bonus. GRPO
+validation is wired through `eval_path`.
 
 ---
 
@@ -313,14 +336,14 @@ bash test_sft_run.sh
 
 This:
 1. Picks the smallest video (e.g., `MruUgO5HFZI`: 8 clips)
-2. Creates `data/tiny_test/` with 8 clip samples + 2 full-video samples
-3. Trains SFT clip + merge + SFT video + merge
+2. Creates `data/tiny_test/` with one YouTube video's clips and full-video sample
+3. Trains one combined SFT pass and merges it
 4. ~2 GB VRAM, ~30 seconds end-to-end
 5. Verifies LoRA weights changed via `check_lora_weights.py`
 
 To verify training works (lora_B went from zeros to non-zero), run after:
 ```bash
-python check_lora_weights.py output/tiny_sft_test/sft_clip_lora
+python check_lora_weights.py output/tiny_sft_test/sft_lora
 # Expected: lora_B 300/300 non-zero, max magnitude > 0
 ```
 
@@ -330,12 +353,10 @@ python check_lora_weights.py output/tiny_sft_test/sft_clip_lora
 
 | Output | Path |
 |--------|------|
-| Stage 1 adapter (clips) | `output/sft_clip_lora/` |
-| Stage 1 merged | `output/sft_clip_merged/` |
-| Stage 2 adapter (videos) | `output/sft_video_lora/` |
-| **Final SFT model** | `output/sft_video_merged/` |
-| GRPO clip adapter | `output/grpo_clip_lora/` |
-| **Final GRPO model** | `output/grpo_video_merged/` |
+| SFT adapter (clips + full videos) | `output/sft_lora/` |
+| **Final SFT model** | `output/sft_merged/` |
+| GRPO adapter | `output/grpo_lora/` |
+| **Final GRPO model** | `output/grpo_merged/` |
 
 ---
 

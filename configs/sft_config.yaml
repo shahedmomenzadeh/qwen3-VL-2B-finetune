@@ -3,6 +3,9 @@
 
 # Model
 model_id: "Qwen/Qwen3-VL-2B-Instruct"
+data_path: "data/sft_train_dataset_sft.json"
+eval_path: "data/sft_val_dataset_sft.json"
+image_folder: "dataset_sft"
 bits: 8                          # 8-bit QLoRA
 lora_enable: true
 vision_lora: true               # Include vision in LoRA
@@ -13,7 +16,7 @@ num_lora_modules: -1            # All linear layers
 lora_namespan_exclude: "['lm_head', 'embed_tokens']"
 
 # Freezing
-freeze_vision_tower: false
+freeze_vision_tower: true
 freeze_llm: true                 # Required with LoRA
 freeze_merger: false
 
@@ -42,7 +45,7 @@ dataloader_num_workers: 4
 # Video
 video_min_pixels: 131072         # 128 * 32 * 32
 video_max_pixels: 262144         # 256 * 32 * 32
-fps: 1
+nframes: 60
 
 # Logging & saving
 logging_steps: 1

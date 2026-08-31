@@ -85,8 +85,8 @@ def analyze_split(input_dir, split_name):
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze cataract dataset statistics")
-    parser.add_argument("--dataset-dir", type=str, default="../dataset",
-                        help="Path to dataset root directory")
+    parser.add_argument("--dataset-dir", type=str, default="dataset_sft",
+                        help="Path to dataset root directory (dataset_sft or dataset_grpo)")
 
     args = parser.parse_args()
     dataset_dir = os.path.abspath(args.dataset_dir)

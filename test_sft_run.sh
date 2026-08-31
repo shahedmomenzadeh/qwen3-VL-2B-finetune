@@ -1,7 +1,7 @@
 #!/bin/bash
 # test_sft_run.sh — Quick end-to-end SFT test on 1 video (clips + full_video)
 #
-# Runs SFT clip → merge → SFT full_video on a single video ID with minimal VRAM.
+# Runs a single SFT pass (clips + full_video of one video ID) with minimal VRAM.
 # Designed for 8 GB GPUs. Does NOT use DeepSpeed.
 #
 # Usage:  bash test_sft_run.sh
@@ -27,48 +27,61 @@ export HF_HOME="$SCRIPT_DIR/hf_cache"
 log "Python: $(.venv/bin/python --version)"
 
 # ── 2. CREATE TINY SUBSET (1 video, all its clips + full_video) ────────────
-# Pick a video with few clips to keep data small
+# Pick a video with few clips to keep data small from the separated SFT data.
 TINY_DATA="data/tiny_test"
 mkdir -p "$TINY_DATA"
 
 log "Creating tiny subset from 1 video ID..."
 .venv/bin/python -c "
-import json, os
+import json
 
-# Pick a small video from train
-with open('data/sft_train_clip.json') as f:
+# Pick a small video from the combined train data
+with open('data/sft_train_dataset_sft.json') as f:
     clips = json.load(f)
 
-# Count samples per video and pick the smallest
+# Restrict candidates to YouTube parents that have a full video.
 from collections import Counter
+youtube_parents = {
+    s['video'].split('/')[1]
+    for s in clips
+    if s['video'].endswith('/full_video.mp4') and not s['video'].split('/')[1].startswith('PH_')
+}
+if not youtube_parents:
+    raise RuntimeError('No YouTube parent with full_video.mp4 found in combined SFT data')
+
+# Count samples per eligible parent and pick the smallest.
 vid_counts = Counter()
 for s in clips:
     parts = s['video'].split('/')
-    vid_counts[parts[1]] += 1
+    if parts[1] in youtube_parents:
+        vid_counts[parts[1]] += 1
 
-# Pick smallest: 8 clips → 32 single-turn QA samples (4 per clip)
+# Pick smallest eligible video (clips + full_video for that video)
 target_vid = sorted(vid_counts.items(), key=lambda x: x[1])[0][0]
-print(f'Using video: {target_vid} ({vid_counts[target_vid]} clips)')
+print(f'Using video: {target_vid} ({vid_counts[target_vid]} samples)')
 
-for fname in ['sft_train_clip.json', 'sft_train_video.json']:
-    with open(f'data/{fname}') as f:
-        data = json.load(f)
-    subset = [s for s in data if target_vid in s['video']]
-    out = f'$TINY_DATA/{fname}'
-    with open(out, 'w') as f:
-        json.dump(subset, f, ensure_ascii=False, indent=2)
-    print(f'  {out}: {len(subset)} samples')
+subset = [s for s in clips if target_vid in s['video']]
+out = '$TINY_DATA/sft_train_all.json'
+with open(out, 'w') as f:
+    json.dump(subset, f, ensure_ascii=False, indent=2)
+print(f'  {out}: {len(subset)} samples')
 
-# Tiny val: 1 validation video
-for fname in ['sft_val_clip.json', 'sft_val_video.json']:
-    with open(f'data/{fname}') as f:
-        data = json.load(f)
-    vid = data[0]['video'].split('/')[1]  # first val video
-    subset = [s for s in data if vid in s['video']]
-    out = f'$TINY_DATA/{fname}'
-    with open(out, 'w') as f:
-        json.dump(subset, f, ensure_ascii=False, indent=2)
-    print(f'  {out}: {len(subset)} samples')
+# Tiny val: 1 validation YouTube video
+with open('data/sft_val_dataset_sft.json') as f:
+    vdata = json.load(f)
+val_parents = sorted({
+    s['video'].split('/')[1]
+    for s in vdata
+    if s['video'].endswith('/full_video.mp4') and not s['video'].split('/')[1].startswith('PH_')
+})
+if not val_parents:
+    raise RuntimeError('No validation YouTube parent with full_video.mp4 found')
+vid = val_parents[0]
+vsubset = [s for s in vdata if vid in s['video']]
+vout = '$TINY_DATA/sft_val_all.json'
+with open(vout, 'w') as f:
+    json.dump(vsubset, f, ensure_ascii=False, indent=2)
+print(f'  {vout}: {len(vsubset)} samples')
 "
 
 # ── 3. COMMON MINIMAL ARGS ─────────────────────────────────────────────────
@@ -110,52 +123,30 @@ COMMON_ARGS=(
     --logging_steps 1 --save_strategy "no"
     --eval_strategy "no"
     --report_to none
-    --image_folder dataset
+    --image_folder dataset_sft
 )
 
-# ── 4. STAGE 1: SFT on clips ───────────────────────────────────────────────
-log "====== STAGE 1: SFT clips ======"
-SFT_CLIP_OUT="$OUTPUT_ROOT/sft_clip_lora"
+# ── 4. SFT (clips + full_video) ─────────────────────────────────────────────
+log "====== SFT (clips + full_video) ======"
+SFT_OUT="$OUTPUT_ROOT/sft_lora"
 
 .venv/bin/python -u src/train/train_sft.py \
     --model_id "$MODEL_ID" \
-    --data_path "$TINY_DATA/sft_train_clip.json" \
-    --output_dir "$SFT_CLIP_OUT" \
+    --data_path "$TINY_DATA/sft_train_all.json" \
+    --output_dir "$SFT_OUT" \
     "${COMMON_ARGS[@]}"
-log "Stage 1 complete."
+log "SFT complete."
 
-# ── 5. MERGE clip LoRA ─────────────────────────────────────────────────────
-log "====== MERGE clips ======"
-SFT_CLIP_MERGED="$OUTPUT_ROOT/sft_clip_merged"
+# ── 5. MERGE LoRA ──────────────────────────────────────────────────────────
+log "====== MERGE ======"
+SFT_MERGED="$OUTPUT_ROOT/sft_merged"
 
 .venv/bin/python src/merge_lora.py \
-    --model-path "$SFT_CLIP_OUT" \
+    --model-path "$SFT_OUT" \
     --model-base "$MODEL_ID" \
-    --save-model-path "$SFT_CLIP_MERGED" \
+    --save-model-path "$SFT_MERGED" \
     --safe-serialization
-log "Merge complete: $SFT_CLIP_MERGED"
-
-# ── 6. STAGE 2: SFT on full_video (base = merged clip) ─────────────────────
-log "====== STAGE 2: SFT full_video ======"
-SFT_VIDEO_OUT="$OUTPUT_ROOT/sft_video_lora"
-
-.venv/bin/python -u src/train/train_sft.py \
-    --model_id "$SFT_CLIP_MERGED" \
-    --data_path "$TINY_DATA/sft_train_video.json" \
-    --output_dir "$SFT_VIDEO_OUT" \
-    "${COMMON_ARGS[@]}"
-log "Stage 2 complete."
-
-# ── 7. MERGE video LoRA ────────────────────────────────────────────────────
-log "====== MERGE video ======"
-SFT_VIDEO_MERGED="$OUTPUT_ROOT/sft_video_merged"
-
-.venv/bin/python src/merge_lora.py \
-    --model-path "$SFT_VIDEO_OUT" \
-    --model-base "$SFT_CLIP_MERGED" \
-    --save-model-path "$SFT_VIDEO_MERGED" \
-    --safe-serialization
-log "Final model: $SFT_VIDEO_MERGED"
+log "Final model: $SFT_MERGED"
 
 log "======================================"
 log "Test run PASSED"

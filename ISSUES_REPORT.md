@@ -106,18 +106,18 @@
 - **Evidence:** Checkpoints save `non_lora_state_dict.bin` (vision tower, merger, embedding weights). On resume, `trainer.train(resume_from_checkpoint=True)` loads only `pytorch_model.bin` / `adapter_model.bin` — it never loads `non_lora_state_dict.bin`.
 - **Impact:** After resume, non-LoRA trainable parameters **revert to initialization values**, silently undoing training progress. Currently mitigated because `freeze_vision_tower=True` + `freeze_llm=True` + `freeze_merger=True` means there are NO non-LoRA trainable params — `non_lora_state_dict.bin` is empty. But if any component is unfrozen in 16-bit mode, this bug would cause silent data loss.
 
-### H3 — `llm_judge_reward` is keyword-overlap heuristic, not an LLM judge
+### H3 — `llm_judge_reward` is keyword-overlap heuristic, not an LLM judge (Resolved)
 
-- **File:** `src/train/reward_funcs.py:49-85`
-- **Evidence:** Despite the name, this function: (1) splits reference reasoning by `'.'` into phrases, (2) checks each phrase's first 30 characters appear anywhere in the completion (substring match), (3) adds 0.3 bonus for reasoning keyword presence. **No teacher LLM is called.**
-- **Impact:** 33% of GRPO training samples (those with `reward_type="llm_judge"`) are rewarded by an inadequate heuristic. The dataset README explicitly describes a teacher-LLM judge pipeline.
-- **Status:** GRPO not yet tested; SFT works fine.
+- **File:** `src/train/reward_funcs.py`
+- **Evidence:** The heuristic `llm_judge_reward` was removed. All active YouTube and phase GRPO rows now use deterministic answer rewards.
+- **Impact:** Rewards no longer depend on reference-reasoning phrase overlap or a nonexistent teacher-LLM call.
+- **Status:** Fixed; requires GRPO smoke testing.
 
-### H5 — GRPO eval dataset unreachable (hardcoded to None)
+### H5 — GRPO eval dataset unreachable (Resolved)
 
 - **File:** `src/dataset/grpo_dataset.py:201`
-- **Evidence:** `make_grpo_data_module` calls `GRPODataset(...)` for training but sets `eval_dataset=None`. The GRPO val JSONs (`grpo_val_clip.json`, `grpo_val_video.json`) exist and contain 411+13 samples but are **never loaded**.
-- **Status:** GRPO not yet tested.
+- **Evidence:** `make_grpo_data_module` now creates an evaluation `GRPODataset` when `data_args.eval_path` is provided. The launch scripts pass `grpo_val_clip.json` as `eval_path`.
+- **Status:** Fixed; requires GRPO smoke testing.
 
 ---
 
@@ -140,23 +140,23 @@
 - **File:** `src/train/train_sft.py:29,35`, `src/train/train_grpo.py:29,35`
 - **Evidence:** `find_target_linear_names` collects both `torch.nn.Linear` AND `torch.nn.Embedding` module names. Currently `lora_namespan_exclude` excludes `embed_tokens` by name, so it's not triggered — but if the exclude list is changed, embedding layers could get LoRA adapters.
 
-### M6 — `format_reward` case inconsistency
-
-- **File:** `src/train/reward_funcs.py:88-105`
-- **Evidence:** `has_reasoning` searches `completion_lower` (lowercase) at lines 95-98. `has_answer` searches `completion` (original case) at line 101 with pattern `[A-D]`. If model outputs lowercase letters in the answer section, `has_answer` becomes `False` and the function returns 0.0 instead of 0.5.
-- **Status:** GRPO not yet tested.
-
-### M7 — `reward_type` and `question_type` columns unused by reward functions
+### M6 — Obsolete separate format reward (Resolved)
 
 - **File:** `src/train/reward_funcs.py`
-- **Evidence:** The dataset prepares `reward_type` and `question_type` fields (passed through `GRPODataset` and TRL kwarg injection), but all three reward functions ignore them. All rewards run on every sample and are summed — `deterministic` rows also get `llm_judge` reward and vice versa.
-- **Status:** GRPO not yet tested.
+- **Evidence:** The separate `format_reward` was removed. Format validity is now part of the deterministic answer outcome.
+- **Status:** Fixed; invalid format receives `-1.3`.
 
-### M8 — Sequence ordering answers (letters E–J) not extractable
+### M7 — `reward_type` and `question_type` columns unused by reward functions (Resolved)
+
+- **File:** `src/train/reward_funcs.py`
+- **Evidence:** The reward functions now dispatch on `reward_type` and `question_type`. YouTube deterministic, visual-observation, and phase rewards return zero for unrelated rows.
+- **Status:** Fixed; requires GRPO smoke testing.
+
+### M8 — Obsolete full-video GRPO answer handling (Resolved)
 
 - **File:** `src/train/reward_funcs.py:23-27`
-- **Evidence:** Patterns use `[A-D]` which only matches letters A–D. The `grpo_train_video.json` contains sequence-ordering questions with answers like `"F, H, I, B, D, C, J, A, E, G"` using letters A–J.
-- **Status:** GRPO not yet tested.
+- **Evidence:** Full-video GRPO data is no longer part of the active pipeline. GRPO preparation now accepts clip-level records only.
+- **Status:** Obsolete after removing full-video GRPO.
 
 ### M9 — `eval/compute_metrics.py` regex inconsistent with `reward_funcs.py`
 
@@ -288,8 +288,8 @@ The following suspected issues were checked and found to be correct:
 | Test | Result | Notes |
 |------|--------|-------|
 | `compileall` (syntax check) | **PASS** | All `.py` files compile |
-| `deterministic_reward` unit tests | **CONFIRMED BUG (C2)** | Not yet fixed; GRPO not tested |
-| `format_reward` unit tests | **CONFIRMED BUG (M6)** | Not yet fixed; GRPO not tested |
+| `deterministic_reward` unit tests | **PASS** | Correct `+1`, wrong `-1`, invalid format `-1.3` |
+| `phase_accuracy_reward` unit tests | **PASS** | Correct `+1`, wrong `-1`, invalid format `-1.3` |
 
 ### GPU SFT Test (8 GB VRAM, 1 video, 1 epoch)
 
@@ -324,9 +324,6 @@ The following suspected issues were checked and found to be correct:
 
 ## Remaining Fix Recommendations (Prioritized)
 
-1. **C2** — Fix `deterministic_reward` regex: add `re.IGNORECASE` and extend `[A-D]` to `[A-J]`. (Required before GRPO)
-2. **C5/M15** — Move GRPO dtype-casting to `grpo_trainer.py` after PEFT is applied. (Required before GRPO)
-3. **H3** — Replace `llm_judge_reward` with an actual teacher-LLM judge, or rename and document the heuristic. (GRPO quality)
-4. **H5** — Wire `eval_path` into `make_grpo_data_module` for GRPO eval. (GRPO monitoring)
-5. **M1** — Bump `pyproject.toml` constraint to `transformers>=4.57.0`. (Safety)
-6. **M6/M8** — Fix `format_reward` and `deterministic_reward` case + letter range for sequence ordering. (GRPO reward correctness)
+1. **C5/M15** — Move GRPO dtype-casting to `grpo_trainer.py` after PEFT is applied. (Required before GRPO)
+2. **M1** — Bump `pyproject.toml` constraint to `transformers>=4.57.0`. (Safety)
+3. **M6/M8** — Resolved by deterministic answer rewards and removing the obsolete full-video GRPO task.

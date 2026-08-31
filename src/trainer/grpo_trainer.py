@@ -19,7 +19,9 @@ from transformers.trainer import (
     SaveStrategy,
     Trainer,
 )
-from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+from transformers.pytorch_utils import (
+    ALL_LAYERNORM_LAYERS
+)
 
 
 def _normalize_trl_optional_flags():
@@ -49,6 +51,7 @@ from train.train_utils import get_peft_state_non_lora_maybe_zero_3
 
 
 def _identity_collator(features):
+    """Identity collator that passes data through unchanged."""
     return features
 
 
@@ -78,6 +81,9 @@ def _iter_generate_models(model):
 
 
 def _liger_exposes_mm_token_type_ids() -> bool:
+    """liger-kernel >= 0.8.0 restored `mm_token_type_ids` on the patched VL forward
+    (see linkedin/Liger-Kernel#1120, #1140). Older releases drop it from the
+    signature so we still need the runtime wrapper below for them."""
     try:
         from importlib.metadata import PackageNotFoundError, version
     except ImportError:
@@ -106,6 +112,9 @@ def _ensure_mm_token_type_ids_generate_compat(model):
         if "mm_token_type_ids" in forward_sig.parameters:
             continue
 
+        # Liger < 0.8.0 replaces the multimodal forward without exposing
+        # `mm_token_type_ids` in the Python signature. Generation validation
+        # then rejects the kwarg before it reaches the underlying Qwen-VL model.
         original_forward = candidate.forward
 
         def forward_with_mm_token_type_ids(self, *args, mm_token_type_ids=None, **kwargs):
@@ -119,6 +128,7 @@ def _ensure_mm_token_type_ids_generate_compat(model):
 class QwenGRPOTrainer(GRPOTrainer):
     def __init__(self, *args, **kwargs):
         super(QwenGRPOTrainer, self).__init__(*args, **kwargs)
+        # Override data_collator to prevent any data processing
         self.data_collator = _identity_collator
         _ensure_mm_token_type_ids_generate_compat(self.model)
         _ensure_mm_token_type_ids_generate_compat(getattr(self, "model_wrapped", None))
@@ -126,49 +136,67 @@ class QwenGRPOTrainer(GRPOTrainer):
         self._apply_liger_grpo_loss_type_override()
 
     def _apply_liger_grpo_loss_type_override(self) -> None:
-        desired = getattr(self.args, "loss_type", None)
+        """If the user passed --liger_grpo_loss_type, swap the loss variant on
+        the LigerFusedLinearGRPOLoss instance that TRL's GRPOTrainer set up.
+        Available types depend on liger-kernel >= 0.8.0:
+        'grpo', 'bnpo', 'dr_grpo', 'dapo', 'cispo', 'sapo', 'luspo'."""
+        desired = getattr(self.args, "liger_grpo_loss_type", None)
         if not desired:
             return
-        liger_loss = getattr(self, "liger_loss", None)
-        if liger_loss is None or not hasattr(liger_loss, "loss_type"):
+        liger_grpo_loss = getattr(self, "liger_grpo_loss", None)
+        if liger_grpo_loss is None or not hasattr(liger_grpo_loss, "loss_type"):
             return
-        previous = liger_loss.loss_type
-        liger_loss.loss_type = desired
+        previous = liger_grpo_loss.loss_type
+        liger_grpo_loss.loss_type = desired
         if getattr(self, "accelerator", None) is None or self.accelerator.is_main_process:
-            print(f"[QwenGRPOTrainer] liger_loss.loss_type: {previous!r} -> {desired!r}")
+            print(f"[QwenGRPOTrainer] liger_grpo_loss.loss_type: {previous!r} -> {desired!r}")
 
     def _set_signature_columns_if_needed(self):
+        # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
+        # By default, this method sets `self._signature_columns` to the model's expected inputs.
+        # In GRPOTrainer, we preprocess data, so using the model's signature columns doesn't work.
+        # Instead, we set them to the columns expected by the `training_step` method, hence the override.
         if self._signature_columns is None:
-            self._signature_columns = ["prompt", "assistant", "image", "images", "video", "videos", "video_kwargs",
-                                       "correct_answer", "question_type", "reference_reasoning", "reward_type"]
+            self._signature_columns = ["prompt", "assistant", "image", "images", "video", "videos", "video_kwargs"]
 
     def _generate_single_turn(self, prompts: list):
+        """Override to include images/videos in generation for multimodal models."""
         from contextlib import nullcontext
         from trl.models.utils import unwrap_model_for_generation
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
         device = self.accelerator.device
 
+        # Get stored images/videos
         images = getattr(self, '_current_images', None)
         videos = getattr(self, '_current_videos', None)
         video_kwargs = getattr(self, '_current_video_kwargs', None)
 
-        model_type = getattr(self.model.config, "model_type", "")
+        model_id = getattr(self.model.config, "_name_or_path", "")
 
+        # Build processor kwargs
         processor_kwargs = {
             "text": prompts,
             "return_tensors": "pt",
             "padding": True,
             "padding_side": "left",
+            "max_length": self.max_prompt_length,
+            "truncation": True,
             "add_special_tokens": False,
         }
 
+        # Add images if available
         if images is not None:
             processor_kwargs["images"] = images
             processor_kwargs["do_resize"] = False
 
+        # Add videos if available
         if videos is not None:
-            if model_type in {"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe"}:
+            if "Qwen2.5" in model_id:
+                processor_kwargs["videos"] = videos
+                if video_kwargs and video_kwargs[0] is not None:
+                    processor_kwargs.update(video_kwargs[0])
+            elif "Qwen3" in model_id:
                 batched_video_datas = []
                 batched_video_metadatas = []
                 for sample_videos in videos:
@@ -179,6 +207,7 @@ class QwenGRPOTrainer(GRPOTrainer):
                         datas, metas = zip(*sample_videos)
                         batched_video_datas.append(list(datas))
                         batched_video_metadatas.append(list(metas))
+                # Only add videos to processor_kwargs if there are actual videos (not all None)
                 if not all(v is None for v in batched_video_datas):
                     processor_kwargs["videos"] = batched_video_datas
                     processor_kwargs["video_metadata"] = batched_video_metadatas
@@ -187,9 +216,11 @@ class QwenGRPOTrainer(GRPOTrainer):
             else:
                 processor_kwargs["videos"] = videos
 
+        # Process inputs
         generate_inputs = self.processing_class(**processor_kwargs)
         generate_inputs = Trainer._prepare_inputs(self, generate_inputs)
 
+        # Generate completions
         with (
             unwrap_model_for_generation(
                 self.model_wrapped, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
@@ -202,10 +233,12 @@ class QwenGRPOTrainer(GRPOTrainer):
                 **generate_inputs, generation_config=self.generation_config, disable_compile=True
             )
 
+        # Extract prompt and completion ids
         prompt_ids, prompt_mask = generate_inputs["input_ids"], generate_inputs["attention_mask"]
         prompt_length = prompt_ids.size(1)
         completion_ids = prompt_completion_ids[:, prompt_length:]
 
+        # Mask everything after the first EOS token
         is_eos = completion_ids == self.eos_token_id
         eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
         eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
@@ -225,24 +258,37 @@ class QwenGRPOTrainer(GRPOTrainer):
 
         return prompt_ids, completion_ids, None, extra_fields
 
-    def _generate_and_score_completions(self, inputs: list[dict[str, torch.Tensor | Any]]) -> dict[str, torch.Tensor | Any]:
+    def _generate_and_score_completions(
+        self, inputs: list[dict[str, torch.Tensor | Any]]
+    ) -> dict[str, torch.Tensor | Any]:
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
 
+        # Handle different input formats:
+        # 1. List of dicts: [{"prompt": ..., "images": ...}, ...]
+        # 2. Batched dict with "prompt" key: {"prompt": [...], "images": [...]}
+        # 3. Already processed BatchFeature (no "prompt" key): error case
         if isinstance(inputs, dict):
             if "prompt" in inputs:
+                # Batched dict format - convert to list of dicts
                 bsz = len(inputs["prompt"])
                 inputs = [
                     {k: (v[i] if v is not None else None) for k, v in inputs.items()}
                     for i in range(bsz)
                 ]
             else:
+                # Already processed BatchFeature - this shouldn't happen in normal flow
                 raise ValueError(
                     f"Received pre-processed inputs with keys {list(inputs.keys())}. "
+                    "Expected raw inputs with 'prompt' key. This may indicate the data "
+                    "is being processed by the AutoProcessor before reaching the trainer. "
+                    "Ensure you're passing data_collator=identity_collator to the trainer."
                 )
         elif not isinstance(inputs, list):
+            # Unexpected input type
             raise TypeError(
                 f"Expected inputs to be list[dict] or dict, got {type(inputs).__name__}. "
+                f"Sample: {str(inputs)[:200]}"
             )
 
         prompts = [x["prompt"] for x in inputs]
@@ -253,6 +299,7 @@ class QwenGRPOTrainer(GRPOTrainer):
             images = [[example.get("image")] if example.get("image") is not None else None for example in inputs]
         else:
             images = None
+        # Transformers requires at least one image in the batch, otherwise it throws an error
         if images is not None and all(img_list == [] for img_list in images):
             images = None
 
@@ -268,6 +315,7 @@ class QwenGRPOTrainer(GRPOTrainer):
         if videos is not None and all(v_list is None or v_list == [] for v_list in videos):
             videos = None
 
+        # Store images/videos for use in _generate_single_turn
         self._current_images = images
         self._current_videos = videos
         self._current_video_kwargs = video_kwargs if videos is not None else None
@@ -276,10 +324,12 @@ class QwenGRPOTrainer(GRPOTrainer):
             self._generate(prompts)
         )
 
+        # Clear stored images/videos
         self._current_images = None
         self._current_videos = None
         self._current_video_kwargs = None
 
+        # Convert lists of token IDs to padded tensors
         prompt_ids = [torch.tensor(ids, device=device) for ids in prompt_ids_list]
         prompt_mask = [torch.ones_like(ids, dtype=torch.long) for ids in prompt_ids]
         prompt_ids = pad(prompt_ids, padding_value=self.pad_token_id, padding_side="left")
@@ -302,21 +352,24 @@ class QwenGRPOTrainer(GRPOTrainer):
         else:
             sampling_per_token_logps = None
 
+        # If mask_truncated_completions is enabled, zero out truncated completions in completion_mask
         if self.mask_truncated_completions:
             eos_and_pad = [self.eos_token_id, self.pad_token_id]
             is_truncated = torch.tensor([ids[-1] not in eos_and_pad for ids in completion_ids_list], device=device)
             completion_mask = completion_mask * (~is_truncated).unsqueeze(1).int()
 
-        prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
-        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+        # Concatenate prompt_mask with completion_mask for logit computation
+        prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)  # (B, P+C)
+        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
 
-        logits_to_keep = completion_ids.size(1)
+        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
 
         num_images = [len(img_list) for img_list in images] if images is not None else None
 
-        model_type = getattr(self.model.config, "model_type", "")
+        model_id = getattr(self.model.config, "_name_or_path", "")
 
+        # Get forward_kwargs for models with multimodal inputs
         if images is not None or videos is not None:
             prompts_text = prompts
 
@@ -324,12 +377,18 @@ class QwenGRPOTrainer(GRPOTrainer):
                 text=prompts_text,
                 padding=True,
                 return_tensors="pt",
-                do_resize=False,
+                do_resize=False
             )
             if images is not None:
                 processor_kwargs["images"] = images
             if videos is not None:
-                if model_type in {"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe"}:
+                if "Qwen2.5" in model_id:
+                    common_vk = video_kwargs[0] if isinstance(video_kwargs, list) else video_kwargs
+                    processor_kwargs["videos"] = videos
+                    if common_vk is not None:
+                        processor_kwargs.update(common_vk)
+
+                elif "Qwen3" in model_id:
                     batched_video_datas = []
                     batched_video_metadatas = []
                     for sample_videos in videos:
@@ -341,6 +400,7 @@ class QwenGRPOTrainer(GRPOTrainer):
                             batched_video_datas.append(list(datas))
                             batched_video_metadatas.append(list(metas))
 
+                    # Only add videos to processor_kwargs if there are actual videos (not all None)
                     if not all(v is None for v in batched_video_datas):
                         processor_kwargs["videos"] = batched_video_datas
                         processor_kwargs["video_metadata"] = batched_video_metadatas
@@ -348,15 +408,18 @@ class QwenGRPOTrainer(GRPOTrainer):
                         common_vk = video_kwargs[0] if isinstance(video_kwargs, list) else video_kwargs
                         if common_vk is not None:
                             processor_kwargs.update(common_vk)
+
                 else:
                     processor_kwargs["videos"] = videos
 
             prompt_inputs = self.processing_class(**processor_kwargs)
+            # Use Trainer._prepare_inputs directly to avoid recursive call through GRPOTrainer._prepare_inputs
             prompt_inputs = Trainer._prepare_inputs(self, prompt_inputs)
             forward_kwargs = {k: v for k, v in prompt_inputs.items() if k not in ["input_ids", "attention_mask"]}
         else:
             forward_kwargs = {}
 
+        # If token_type_ids are used, extend them with zeros for the completion part
         if "token_type_ids" in forward_kwargs:
             token_type_ids = forward_kwargs["token_type_ids"]
             forward_kwargs["token_type_ids"] = torch.cat(
@@ -368,7 +431,14 @@ class QwenGRPOTrainer(GRPOTrainer):
             )
 
         with torch.no_grad():
-            generate_every = self.args.steps_per_generation * self.num_iterations
+            # If the generation and optimization steps are misaligned—i.e., if generation does not occur at the end of
+            # a full optimizer step (when gradient_accumulation_steps is not a multiple of generate_every)—then the
+            # samples may come from an earlier version of the model. In that case, we need to track old_per_token_logps
+            # for importance sampling. If the steps are aligned, importance sampling isn't necessary and we set
+            # old_per_token_logps to None.
+            # When using vLLM, we always compute old_per_token_logps for importance sampling, it was shown that the
+            # distribution mismatch between vLLM and the training model can be large and harm the training.
+            generate_every = self.args.steps_per_generation * self.num_iterations  # generation frequency
             if self.args.gradient_accumulation_steps % generate_every != 0 or (
                 self.use_vllm and self.vllm_importance_sampling_correction
             ):
@@ -379,17 +449,19 @@ class QwenGRPOTrainer(GRPOTrainer):
                     logits_to_keep,
                     batch_size,
                     num_images=num_images,
-                    **forward_kwargs,
+                    **forward_kwargs,  # may contain pixel_values, image_grid_thw, pixel_attention_mask and image_sizes
                 )
             else:
                 old_per_token_logps = None
 
+            # Compute the importance sampling ratio when using vLLM, to correct for potential distribution mismatch
             if self.use_vllm and self.vllm_importance_sampling_correction:
                 importance_sampling_ratio = torch.exp(old_per_token_logps - sampling_per_token_logps)
                 importance_sampling_ratio = torch.clamp(
                     importance_sampling_ratio, max=self.vllm_importance_sampling_cap
                 )
 
+            # Compute the per-token log probabilities for the reference model
             if self.beta != 0.0:
                 if self.ref_model is not None:
                     ref_per_token_logps, _ = self._get_per_token_logps_and_entropies(
@@ -399,7 +471,7 @@ class QwenGRPOTrainer(GRPOTrainer):
                         logits_to_keep,
                         batch_size=batch_size,
                         num_images=num_images,
-                        **forward_kwargs,
+                        **forward_kwargs,  # may contain pixel_values, image_grid_thw, pixel_attention_mask and image_sizes
                     )
                 else:
                     with self.accelerator.unwrap_model(self.model).disable_adapter():
@@ -410,11 +482,12 @@ class QwenGRPOTrainer(GRPOTrainer):
                             logits_to_keep,
                             batch_size=batch_size,
                             num_images=num_images,
-                            **forward_kwargs,
+                            **forward_kwargs,  # may contain pixel_values, image_grid_thw, pixel_attention_mask and image_sizes
                         )
             else:
                 ref_per_token_logps = None
 
+        # Decode
         prompts_text = self.processing_class.batch_decode(prompt_ids, skip_special_tokens=True)
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
         if is_conversational(inputs[0]):
@@ -425,6 +498,7 @@ class QwenGRPOTrainer(GRPOTrainer):
         else:
             completions = completions_text
 
+        # Merge extra_fields from rollout_func into inputs for reward functions
         if extra_fields:
             for i, inp in enumerate(inputs):
                 for key, values in extra_fields.items():
@@ -433,19 +507,27 @@ class QwenGRPOTrainer(GRPOTrainer):
                     elif not isinstance(values, list):
                         inp[key] = values
 
+        # Calculate rewards for each reward function. rewards_per_func aggregates rewards across all processes. This is
+        # important because rewards will be normalized per group, and completions are distributed. We will later slice
+        # rewards_per_func to extract each process's subset.
         rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)
 
+        # Apply weights to each reward function's output and sum
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
+        # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
 
+        # Normalize the rewards to compute the advantages
         mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
         advantages = rewards - mean_grouped_rewards
 
         if self.scale_rewards in ["group", "none"]:
+            # If self.scale_rewards = "none", we'll still log group level std
             std_rewards = rewards.view(-1, self.num_generations).std(dim=1)
             std_rewards = std_rewards.repeat_interleave(self.num_generations, dim=0)
         elif self.scale_rewards == "batch":
+            # Compute global std
             std_rewards = rewards.std().expand_as(rewards)
         else:
             raise ValueError(
@@ -456,13 +538,15 @@ class QwenGRPOTrainer(GRPOTrainer):
         if self.scale_rewards != "none":
             advantages = advantages / (std_rewards + 1e-4)
 
+        # Slice to keep only the local part of the data
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
             (self.accelerator.process_index + 1) * len(prompts),
         )
-        all_process_advantages = advantages.clone()
+        all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
         advantages = advantages[process_slice]
 
+        # Calculate mean reward per function, but only for samples where the function was applied (non-NaN values)
         for i, reward_func_name in enumerate(self.reward_func_names):
             mean_rewards = torch.nanmean(rewards_per_func[:, i]).item()
             self._metrics[mode][f"rewards/{reward_func_name}/mean"].append(mean_rewards)
@@ -472,6 +556,7 @@ class QwenGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["reward_std"].append(std_rewards.mean().item())
         self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())
 
+        # Log prompt and completion texts
         self._logs["prompt"].extend(gather_object(prompts_text))
         self._logs["completion"].extend(gather_object(completions_text))
         for i, name in enumerate(self.reward_func_names):
@@ -550,7 +635,7 @@ class QwenGRPOTrainer(GRPOTrainer):
         if images is not None:
             output["num_images"] = num_images
         return output
-
+    
     @profiling_decorator
     def _get_per_token_logps_and_entropies(
         self,
@@ -571,13 +656,15 @@ class QwenGRPOTrainer(GRPOTrainer):
         second_per_grid_ts=None,
         mm_token_type_ids=None,
     ) -> dict[str, torch.Tensor | None]:
-        batch_size = batch_size or input_ids.size(0)
+        """Compute log-probs and (optionally) entropies for each token."""
+        batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
         all_entropies = []
         for start in range(0, input_ids.size(0), batch_size):
-            input_ids_batch = input_ids[start: start + batch_size]
-            attention_mask_batch = attention_mask[start: start + batch_size]
+            input_ids_batch = input_ids[start : start + batch_size]
+            attention_mask_batch = attention_mask[start : start + batch_size]
 
+            # Build model inputs - check if the model supports logits_to_keep (some models and VLMs don't)
             model_inputs = {"input_ids": input_ids_batch, "attention_mask": attention_mask_batch}
             if image_grid_thw is not None and pixel_values is not None:
                 rows_per_image = image_grid_thw.prod(dim=-1)
@@ -590,35 +677,41 @@ class QwenGRPOTrainer(GRPOTrainer):
                 img_start, img_end = cum_imgs[start], cum_imgs[start + batch_size]
                 model_inputs["image_grid_thw"] = image_grid_thw[img_start:img_end]
             elif pixel_values is not None:
-                model_inputs["pixel_values"] = pixel_values[start: start + batch_size]
+                model_inputs["pixel_values"] = pixel_values[start : start + batch_size]
 
             if pixel_values_videos is not None:
-                model_inputs["pixel_values_videos"] = pixel_values_videos[start: start + batch_size]
+                model_inputs["pixel_values_videos"] = pixel_values_videos[start : start + batch_size]
             if video_grid_thw is not None:
-                model_inputs["video_grid_thw"] = video_grid_thw[start: start + batch_size]
+                model_inputs["video_grid_thw"] = video_grid_thw[start : start + batch_size]
             if second_per_grid_ts is not None:
-                model_inputs["second_per_grid_ts"] = second_per_grid_ts[start: start + batch_size]
+                model_inputs["second_per_grid_ts"] = second_per_grid_ts[start : start + batch_size]
             if mm_token_type_ids is not None:
-                model_inputs["mm_token_type_ids"] = mm_token_type_ids[start: start + batch_size]
+                model_inputs["mm_token_type_ids"] = mm_token_type_ids[start : start + batch_size]
 
             if pixel_attention_mask is not None:
-                model_inputs["pixel_attention_mask"] = pixel_attention_mask[start: start + batch_size]
+                model_inputs["pixel_attention_mask"] = pixel_attention_mask[start : start + batch_size]
             if image_sizes is not None:
-                model_inputs["image_sizes"] = image_sizes[start: start + batch_size]
+                model_inputs["image_sizes"] = image_sizes[start : start + batch_size]
             if token_type_ids is not None:
-                model_inputs["token_type_ids"] = token_type_ids[start: start + batch_size]
+                model_inputs["token_type_ids"] = token_type_ids[start : start + batch_size]
 
+            # Only add logits_to_keep if the model supports it
             if "logits_to_keep" in self.model_kwarg_keys:
+                # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
                 model_inputs["logits_to_keep"] = logits_to_keep + 1
 
-            model_inputs["use_cache"] = False
+            model_inputs["use_cache"] = False  # only used in generation; set False to suppress warnings
 
             logits = model(**model_inputs).logits
-            logits = logits[:, :-1, :]
-            logits = logits[:, -logits_to_keep:, :]
+            # Exclude the last value: it corresponds to the next token pred
+            logits = logits[:, :-1, :]  # (B, L-1, H)
+            # Only keep the last logits_to_keep. For model that support logits_to_keep, this is a no-op.
+            logits = logits[:, -logits_to_keep:, :]  # (B, logits_to_keep, H)
+            # Divide logits by sampling temperature.
+            # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
             logits = logits / self.temperature
             completion_ids = input_ids_batch[:, -logits_to_keep:]
-            logps = selective_log_softmax(logits, completion_ids)
+            logps = selective_log_softmax(logits, completion_ids)  # compute logprobs
             all_logps.append(logps)
 
             if compute_entropy:
@@ -629,7 +722,7 @@ class QwenGRPOTrainer(GRPOTrainer):
         logps = torch.cat(all_logps, dim=0)
         entropies = torch.cat(all_entropies, dim=0) if compute_entropy else None
         return logps, entropies
-
+    
     @profiling_decorator
     def _get_last_hidden_state(
         self,
@@ -649,10 +742,13 @@ class QwenGRPOTrainer(GRPOTrainer):
         if is_peft_model(unwrapped_model):
             unwrapped_model = unwrapped_model.base_model.model
 
+        # Build model inputs - check if the model supports logits_to_keep (some models and VLMs don't)
         model_inputs = {"input_ids": input_ids, "attention_mask": attention_mask}
 
+        # For Qwen models:
         if image_grid_thw is not None and pixel_values is not None:
             model_inputs["image_grid_thw"] = image_grid_thw
+        # For Gemma, SmolVLM2, LLaVa-Next etc.:
         if pixel_values is not None:
             model_inputs["pixel_values"] = pixel_values
 
@@ -664,28 +760,36 @@ class QwenGRPOTrainer(GRPOTrainer):
         if mm_token_type_ids is not None:
             model_inputs["mm_token_type_ids"] = mm_token_type_ids
 
+        # For SmolVLM2
         if pixel_attention_mask is not None:
             model_inputs["pixel_attention_mask"] = pixel_attention_mask
+        # For LLaVa-Next
         if image_sizes is not None:
             model_inputs["image_sizes"] = image_sizes
 
+        # Only add logits_to_keep if the model supports it
         if "logits_to_keep" in self.model_kwarg_keys:
+            # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             model_inputs["logits_to_keep"] = logits_to_keep + 1
 
-        model_inputs["use_cache"] = False
+        model_inputs["use_cache"] = False  # only used in generation; set False to suppress warnings
 
         last_hidden_state = unwrapped_model.model(**model_inputs).last_hidden_state
-        last_hidden_state = last_hidden_state[:, :-1, :]
-        last_hidden_state = last_hidden_state[:, -logits_to_keep:, :]
+        # Exclude the last value: it corresponds to the next token pred
+        last_hidden_state = last_hidden_state[:, :-1, :]  # (B, L-1, H)
+        # Only keep the last logits_to_keep. For model that support logits_to_keep, this is a no-op.
+        last_hidden_state = last_hidden_state[:, -logits_to_keep:, :]  # (B, logits_to_keep, H)
         return last_hidden_state
-
+    
     def compute_liger_loss(self, unwrapped_model, inputs):
+        # Compute the per-token log probabilities for the model
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-        logits_to_keep = completion_ids.size(1)
+        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
+        # Get the last hidden state of the model
         last_hidden_state = self._get_last_hidden_state(
             unwrapped_model,
             input_ids,
@@ -701,7 +805,8 @@ class QwenGRPOTrainer(GRPOTrainer):
             inputs.get("mm_token_type_ids"),
         )
 
-        loss, metrics = self.liger_loss(
+        # compute loss and metrics using liger grpo loss
+        loss, metrics = self.liger_grpo_loss(
             _input=last_hidden_state,
             lin_weight=unwrapped_model.lm_head.weight,
             selected_token_ids=completion_ids,
@@ -711,7 +816,8 @@ class QwenGRPOTrainer(GRPOTrainer):
             old_per_token_logps=inputs.get("old_per_token_logps"),
             ref_per_token_logps=inputs.get("ref_per_token_logps"),
         )
-
+        # Extract metrics from the liger_grpo_loss output
+        # KL divergence is the first metric when beta is non-zero
         mean_kl = metrics[0] if self.beta != 0.0 else None
         clip_ratio = metrics[-1]
 
@@ -721,13 +827,16 @@ class QwenGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["clip_ratio"].append(self.accelerator.gather(clip_ratio).mean().item())
         return loss / self.current_gradient_accumulation_steps
 
+    
     def _compute_loss(self, model, inputs):
+        # Compute the per-token log probabilities for the model
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-        logits_to_keep = completion_ids.size(1)
+        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
+        # Compute the per_token_logps and the entropy at each position in the completion
         per_token_logps, entropies = self._get_per_token_logps_and_entropies(
             model,
             input_ids,
@@ -751,13 +860,20 @@ class QwenGRPOTrainer(GRPOTrainer):
         else:
             entropy_mask = None
 
+        # Compute the KL divergence between the model and the reference model
         if self.beta != 0.0:
             ref_per_token_logps = inputs["ref_per_token_logps"]
             per_token_kl = (
                 torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
             )
 
+        # Compute the loss
         advantages = inputs["advantages"]
+        # When num_iterations == 1 and steps_per_generation <= gradient_accumulation_steps,
+        # old_per_token_logps == per_token_logps. In this case we can skip its computation
+        # (see _generate_and_score_completions) and instead use per_token_logps.detach().
+        # The exception is when using vLLM, where we always compute old_per_token_logps
+        # for importance sampling
         old_per_token_logps = inputs.get("old_per_token_logps")
         old_per_token_logps = per_token_logps.detach() if old_per_token_logps is None else old_per_token_logps
 
@@ -772,10 +888,13 @@ class QwenGRPOTrainer(GRPOTrainer):
                 f"Unknown importance sampling level: {self.importance_sampling_level}. Possible values are 'token' "
                 "and 'sequence'."
             )
+        # From here, log_importance_weights (and all subsequent tensors, coef_1, coef_2, etc.) shape depends on
+        # importance_sampling_level: "token" level: (B, T); "sequence" level: (B, 1)
 
         coef_1 = torch.exp(log_importance_weights)
         coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
 
+        # Two-sided clipping
         if self.args.delta is not None:
             coef_1 = torch.clamp(coef_1, max=self.args.delta)
 
@@ -806,13 +925,16 @@ class QwenGRPOTrainer(GRPOTrainer):
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
 
+        # Log the metrics
         mode = "train" if self.model.training else "eval"
 
+        completion_token_count = completion_mask.sum().clamp(min=1.0)
+
         def masked_batch_mean(x):
-            if x.shape[1] == 1:
+            if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
                 return x.mean()
             else:
-                return (x * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+                return (x * completion_mask).sum() / completion_token_count
 
         if self.beta != 0.0:
             mean_kl = masked_batch_mean(per_token_kl)
@@ -821,6 +943,7 @@ class QwenGRPOTrainer(GRPOTrainer):
         mean_entropy = masked_batch_mean(entropies)
         self._metrics[mode]["entropy"].append(self.accelerator.gather(mean_entropy).nanmean().item())
 
+        # Compute the clipped probability ratios
         is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
         is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
         is_region_clipped = is_low_clipped | is_high_clipped
@@ -840,9 +963,14 @@ class QwenGRPOTrainer(GRPOTrainer):
         return loss
 
     def create_optimizer(self):
+        """
+        Setup the optimizer.
+        We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
+        Trainer's init through `optimizers`, or subclass and override this method in a subclass.
+        """
         if is_sagemaker_mp_enabled():
             return super().create_optimizer()
-
+        
         opt_model = self.model
 
         if self.optimizer is None:
@@ -861,7 +989,7 @@ class QwenGRPOTrainer(GRPOTrainer):
 
             if len(lr_mapper) > 0:
                 special_lr_parameters = merger_parameters + visual_parameters
-
+                
                 optimizer_grouped_parameters = [
                     {
                         "params": [p for n, p in opt_model.named_parameters() if (n in decay_parameters and n not in special_lr_parameters and p.requires_grad)],
@@ -872,26 +1000,26 @@ class QwenGRPOTrainer(GRPOTrainer):
                         "weight_decay": 0.0,
                     },
                 ]
-
-                if visual_parameters:
+                
+                if visual_parameters: 
                     optimizer_grouped_parameters.extend(
                         [
                             {
                                 "params": [p for n, p in opt_model.named_parameters() if (n in decay_parameters and n in visual_parameters and p.requires_grad)],
                                 "weight_decay": self.args.weight_decay,
                                 "lr": self.args.vision_lr,
-                                "param_group_name": "visaul_decay",
+                                "param_group_name": "visaul_decay"
                             },
                             {
                                 "params": [p for n, p in opt_model.named_parameters() if (n not in decay_parameters and n in visual_parameters and p.requires_grad)],
                                 "weight_decay": 0.0,
                                 "lr": self.args.vision_lr,
-                                "param_group_name": "visaul_non_decay",
+                                "param_group_name": "visaul_non_decay"
                             },
                         ]
                     )
-
-                if merger_parameters:
+                
+                if merger_parameters: 
                     optimizer_grouped_parameters.extend(
                         [
                             {
@@ -919,7 +1047,7 @@ class QwenGRPOTrainer(GRPOTrainer):
                         "weight_decay": 0.0,
                     },
                 ]
-            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+            optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(self.args)
 
             self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
             if optimizer_cls.__name__ == "Adam8bit":
@@ -950,7 +1078,7 @@ class QwenGRPOTrainer(GRPOTrainer):
 
         non_lora = get_peft_state_non_lora_maybe_zero_3(
             self.model.named_parameters(),
-            require_grad_only=False,
+            require_grad_only=True,
         )
 
         if self.args.should_save:

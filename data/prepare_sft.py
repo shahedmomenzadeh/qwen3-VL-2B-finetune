@@ -3,8 +3,9 @@
 Convert cataract surgery dataset (OpenAI chat format JSONL) to LLaVA format JSON for SFT training.
 
 Usage:
-    python data/prepare_sft.py --input-dir dataset/Train --output data/sft_train_clip.json --split train --data-type clip
-    python data/prepare_sft.py --input-dir dataset/Train --output data/sft_train_video.json --split train --data-type full_video
+    python data/prepare_sft.py --input-dir dataset_sft/Train --output data/sft_train_dataset_sft.json --split train --data-type all
+    python data/prepare_sft.py --input-dir dataset_sft/Train --output data/sft_train_clip_dataset_sft.json --split train --data-type clip
+    python data/prepare_sft.py --input-dir dataset_sft/Train --output data/sft_train_video_dataset_sft.json --split train --data-type full_video
 """
 import argparse
 import json
@@ -106,13 +107,20 @@ def process_sft_file(jsonl_path, input_dir):
 
             samples.append(sample)
 
+    expected_samples = 1 if is_full_video or video_id_dir.startswith("PH_") else 4
+    if len(samples) != expected_samples:
+        print(
+            f"Warning: {jsonl_path} contains {len(samples)} samples; "
+            f"expected {expected_samples} for this dataset source"
+        )
+
     return samples
 
 
 def main():
     parser = argparse.ArgumentParser(description="Prepare SFT dataset from cataract JSONL files")
     parser.add_argument("--input-dir", type=str, required=True,
-                        help="Path to split directory (e.g., dataset/Train)")
+                        help="Path to split directory (e.g., dataset_sft/Train)")
     parser.add_argument("--output", type=str, required=True,
                         help="Output JSON file path")
     parser.add_argument("--split", type=str, default="train",
