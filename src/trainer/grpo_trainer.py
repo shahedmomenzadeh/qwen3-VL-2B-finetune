@@ -276,6 +276,10 @@ class QwenGRPOTrainer(Trainer):
 
         # ── Step 1: Generate G completions per prompt ───────────
         model.eval()
+        # autocast dtype for generation/logprob forwards (ensures hidden/lm_head dtype match even if norm is float32)
+        compute_dtype = torch.bfloat16 if getattr(self.args, "bf16", False) else (torch.float16 if getattr(self.args, "fp16", False) else torch.float32)
+        use_autocast = getattr(self.args, "bf16", False) or getattr(self.args, "fp16", False)
+        autocast_ctx = torch.autocast(device_type="cuda", dtype=compute_dtype) if use_autocast and torch.cuda.is_available() else nullcontext()
         gen_kwargs = {
             "input_ids": prompt_input_ids.repeat_interleave(G, dim=0),
             "attention_mask": prompt_attention_mask.repeat_interleave(G, dim=0),
@@ -300,7 +304,10 @@ class QwenGRPOTrainer(Trainer):
 
         with torch.no_grad():
             unwrapped_model = self.accelerator.unwrap_model(model)
-            generated_ids = unwrapped_model.generate(**gen_kwargs)
+            # Wrap generate in autocast so lm_head hidden dtype matches weight dtype (fixes
+            # RuntimeError: expected scalar type BFloat16 but found Float when norm is float32)
+            with autocast_ctx:
+                generated_ids = unwrapped_model.generate(**gen_kwargs)
 
         prompt_len = prompt_input_ids.shape[1]
         completion_ids = generated_ids[:, prompt_len:]
@@ -383,11 +390,12 @@ class QwenGRPOTrainer(Trainer):
 
         # ── 4a: OLD policy per-token logprobs (no_grad, LoRA enabled) ───────────
         with torch.no_grad():
-            old_outputs = model(
-                input_ids=generated_ids,
-                attention_mask=full_attention_mask,
-                **full_forward_kwargs,
-            )
+            with autocast_ctx:
+                old_outputs = model(
+                    input_ids=generated_ids,
+                    attention_mask=full_attention_mask,
+                    **full_forward_kwargs,
+                )
             old_logits = old_outputs.logits  # (B*G, seq_len, vocab)
             old_shift_logits = old_logits[:, prompt_len - 1 : -1, :].contiguous()
             old_log_probs = F.log_softmax(old_shift_logits, dim=-1)
@@ -408,11 +416,12 @@ class QwenGRPOTrainer(Trainer):
                 else:
                     ctx = nullcontext()
                 with ctx:
-                    ref_outputs = model(
-                        input_ids=generated_ids,
-                        attention_mask=full_attention_mask,
-                        **full_forward_kwargs,
-                    )
+                    with autocast_ctx:
+                        ref_outputs = model(
+                            input_ids=generated_ids,
+                            attention_mask=full_attention_mask,
+                            **full_forward_kwargs,
+                        )
                     ref_logits = ref_outputs.logits
                     ref_shift_logits = ref_logits[:, prompt_len - 1 : -1, :].contiguous()
                     ref_log_probs = F.log_softmax(ref_shift_logits, dim=-1)
@@ -424,11 +433,12 @@ class QwenGRPOTrainer(Trainer):
 
         # ── 4c: CURRENT policy per-token logprobs (with grad) ───────────
         model.train()
-        outputs = model(
-            input_ids=generated_ids,
-            attention_mask=full_attention_mask,
-            **full_forward_kwargs,
-        )
+        with autocast_ctx:
+            outputs = model(
+                input_ids=generated_ids,
+                attention_mask=full_attention_mask,
+                **full_forward_kwargs,
+            )
         logits = outputs.logits  # (batch_size * G, seq_len, vocab_size)
         shift_logits = logits[:, prompt_len - 1 : -1, :].contiguous()
         log_probs = F.log_softmax(shift_logits, dim=-1)

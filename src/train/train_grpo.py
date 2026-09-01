@@ -225,8 +225,11 @@ def train():
                 module = module.to(torch.float32)
             if "lm_head" in name or "embed_token" in name:
                 if hasattr(module, "weight"):
-                    if training_args.bf16 and module.weight.dtype == torch.float32:
-                        module = module.to(torch.bfloat16)
+                    # Keep lm_head/embed in float32 to match LayerNorm float32 output.
+                    # Previous code cast to bfloat16 -> dtype mismatch: hidden (float32 from norm)
+                    # vs lm_head weight (bfloat16) causes RuntimeError in generate (outside autocast).
+                    # See: expected scalar type BFloat16 but found Float at lm_head.
+                    module = module.to(torch.float32)
 
     data_module = make_grpo_data_module(
         model_id=model_args.model_id,

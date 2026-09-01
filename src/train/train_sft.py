@@ -204,11 +204,10 @@ def train():
                     module = module.to(torch.bfloat16)
             if 'norm' in name:
                 module = module.to(torch.float32)
-            
             if 'lm_head' in name or 'embed_token' in name:
                 if hasattr(module, 'weight'):
-                    if training_args.bf16 and module.weight.dtype == torch.float32:
-                        module = module.to(torch.bfloat16)
+                    # Keep in float32 to match LayerNorm float32 (prevents generate dtype mismatch)
+                    module = module.to(torch.float32)
 
     data_module = make_supervised_data_module(model_id=model_args.model_id,
                                               processor=processor,
