@@ -4,16 +4,19 @@ import logging
 
 
 def maybe_zero_3(param, ignore_status=False, name=None, device=torch.device('cpu')):
-    from deepspeed import zero
-    from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
     if type(device) is str:
         device = torch.device(device)
     if hasattr(param, "ds_id"):
-        if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
-            if not ignore_status:
-                logging.warning(f"{name}: param.ds_status != ZeroParamStatus.NOT_AVAILABLE: {param.ds_status}")
-        with zero.GatheredParameters([param]):
-            param = param.data.detach()
+        try:
+            from deepspeed import zero
+            from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+            if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
+                if not ignore_status:
+                    logging.warning(f"{name}: param.ds_status != ZeroParamStatus.NOT_AVAILABLE: {param.ds_status}")
+            with zero.GatheredParameters([param]):
+                param = param.data.detach()
+        except ImportError:
+            param = param.detach()
     else:
         param = param.detach()
     if device == param.device:
@@ -58,7 +61,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
     """Collects the state dict and dump to disk."""
 
-    if trainer.deepspeed:
+    if getattr(trainer, "deepspeed", None):
         torch.cuda.synchronize()
         trainer.save_model(output_dir)
         return

@@ -134,6 +134,7 @@ class SupervisedDataset(Dataset):
                     self.video_resized_w, 
                     self.video_resized_h, 
                     self.data_args.fps,
+                    self.data_args.nframes,
                     self.image_patch_size,
                     return_video_metadata=self.return_video_metadata
                 )

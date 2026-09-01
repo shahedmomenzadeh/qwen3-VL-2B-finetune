@@ -1,5 +1,6 @@
 import re
 import torch
+import os
 from functools import lru_cache
 
 from transformers import AutoConfig
@@ -160,7 +161,25 @@ def get_image_info(image_path, min_pixel, max_pixel, width, height, image_patch_
 
     return image_input[0]
 
-def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, image_patch_size, return_video_metadata=False):
+def probe_total_frames(video_path):
+    """Probe the total number of frames in a video to prevent out-of-bounds sampling."""
+    try:
+        from decord import VideoReader, cpu
+        vr = VideoReader(video_path, ctx=cpu(0))
+        return len(vr)
+    except Exception:
+        try:
+            import cv2
+            cap = cv2.VideoCapture(video_path)
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            if total > 0:
+                return total
+        except Exception:
+            pass
+    return None
+
+def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, nframes, image_patch_size, return_video_metadata=False):
     # Using this because of process_vision_info function
     # Need to fix this in the future
     content = {
@@ -168,8 +187,19 @@ def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, image
         "video": video_path,
         "min_pixels": min_pixels,
         "max_pixels": max_pixels,
-        "fps": fps
     }
+
+    if fps is not None:
+        content["fps"] = fps
+    elif nframes is not None:
+        total = probe_total_frames(video_path)
+        if total is not None:
+            content["nframes"] = max(2, min(nframes, total))
+        else:
+            content["nframes"] = max(2, nframes)
+    else:
+        # Default fallback
+        content["fps"] = 1.0
 
     if width is not None and height is not None:
         content["resized_width"] = width

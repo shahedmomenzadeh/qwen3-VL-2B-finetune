@@ -49,7 +49,6 @@ uv pip install --python .venv/bin/python \
     "qwen-vl-utils[decord]" \
     "peft>=0.13.0" \
     "trl>=1.8.0" \
-    "deepspeed>=0.15.0" \
     "liger-kernel>=0.8.0" \
     "ujson" \
     "tensorboard" \
@@ -79,8 +78,11 @@ import peft; print(f'peft: {peft.__version__}')
 import trl; print(f'trl: {trl.__version__}')
 import liger_kernel; print('liger_kernel: OK')
 import accelerate; print(f'accelerate: {accelerate.__version__}')
-import deepspeed; print(f'deepspeed: {deepspeed.__version__}')
 import bitsandbytes; print(f'bitsandbytes: {bitsandbytes.__version__}')
+try:
+    import deepspeed; print(f'deepspeed: {deepspeed.__version__}')
+except ImportError:
+    print('deepspeed: not installed (optional, single-GPU OK)')
 "
 
 log "=============================="
