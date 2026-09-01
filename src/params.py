@@ -108,7 +108,7 @@ class GRPOArguments(TrainingArguments):
     use_dora: bool = False
     lora_rank: int = 64
     lora_alpha: int = 16
-    lora_dropout: float = 0.05
+    lora_dropout: float = 0.0  # 0.0 for GRPO (deterministic old/current logprobs; see GRPO_ISSUES.md P1-1)
     lora_weight_path: str = ""
     lora_bias: str = "none"
     vision_lr: Optional[float] = None
@@ -133,15 +133,15 @@ class GRPOArguments(TrainingArguments):
     repetition_penalty: float = 1.0
     max_completion_length: int = 256
     max_prompt_length: int = 512
-    use_liger_loss: bool = True
+    # Legacy: kept for backward compat but not used by QwenGRPOTrainer (custom manual loss).
+    # GRPO_ISSUES.md P2-1/2: manual loss computes token-mean PPO clip + k3 KL; not Liger.
+    use_liger_loss: bool = field(default=False, metadata={"help": "Legacy: no-op for QwenGRPOTrainer (manual GRPO loss)."})
     liger_grpo_loss_type: Optional[str] = field(
         default=None,
         metadata={
             "help": (
-                "Override the Liger GRPO loss variant when --use_liger_loss is True. "
-                "liger-kernel 0.8.0 supports: 'grpo', 'bnpo', 'dr_grpo', 'dapo' (default), "
-                "'cispo', 'sapo', 'luspo'. When None, the underlying LigerFusedLinearGRPOLoss "
-                "default is used. Note: 'dr_grpo' also requires --max_completion_length."
+                "Legacy no-op for QwenGRPOTrainer. Custom loss is manual token-mean PPO+KL, "
+                "not LigerFusedLinearGRPOLoss. (GRPO_ISSUES.md P2-1/2)"
             )
         },
     )

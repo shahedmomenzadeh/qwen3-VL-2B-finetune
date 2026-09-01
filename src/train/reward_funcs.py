@@ -62,7 +62,7 @@ def normalize_phase(val: Any) -> Optional[str]:
     return val_str
 
 
-def score_mcq_reward(completion_text: str, gold_answer: str) -> Tuple[float, float]:
+def score_mcq_reward(completion_text: str, gold_answer: str, allow_fallback: bool = False) -> Tuple[float, float]:
     """
     Evaluates MCQ tasks (step_identification, visual_observation, instrument_identification).
     Prompt instruction requires: {"explanation": "...", "answer": "A|B|C|D"}
@@ -71,12 +71,15 @@ def score_mcq_reward(completion_text: str, gold_answer: str) -> Tuple[float, flo
         (task_reward, format_reward)
         task_reward: 1.0 if answer matches gold_answer and schema is valid, else 0.0
         format_reward: 1.0 if JSON strictly conforms to expected schema, else 0.0
+    Strict mode (allow_fallback=False): only JSON answer field counts (GRPO_ISSUES.md P2-4).
     """
     gold_answer = str(gold_answer).strip().upper()
     parsed = extract_json_object(completion_text)
 
     if parsed is None:
-        # Fallback regex for task reward if malformed JSON
+        if not allow_fallback:
+            return 0.0, 0.0
+        # Fallback regex for task reward if malformed JSON (debug only)
         match = re.search(r'\b([A-D])\b', completion_text.upper())
         if match and match.group(1) == gold_answer:
             return 0.0, 0.0  # In MCQ, task reward requires valid JSON according to spec
@@ -100,12 +103,13 @@ def score_mcq_reward(completion_text: str, gold_answer: str) -> Tuple[float, flo
     return task_reward, format_reward
 
 
-def score_boundary_detection(completion_text: str, gold_answer: Dict[str, Any], tau: float = 1.5) -> Tuple[float, float]:
+def score_boundary_detection(completion_text: str, gold_answer: Dict[str, Any], tau: float = 1.5, allow_fallback: bool = False) -> Tuple[float, float]:
     """
     Evaluates boundary detection.
     Gold: {"timestamp": float}
     Pred JSON: {"explanation": "...", "answer": {"timestamp": float}} or {"timestamp": float}
     Continuous reward: exp(-|t_pred - t_gt| / 1.5)
+    Strict mode (allow_fallback=False): only JSON answer field counts (GRPO_ISSUES.md P2-4).
     """
     try:
         gt_t = float(gold_answer["timestamp"])
@@ -117,7 +121,7 @@ def score_boundary_detection(completion_text: str, gold_answer: Dict[str, Any], 
     format_reward = 0.0
 
     if parsed is not None:
-        # Check standard answer schema
+        # Check standard answer schema — only JSON answer field, not stray numbers in reasoning
         ans_obj = parsed.get("answer", parsed)
         if isinstance(ans_obj, dict) and "timestamp" in ans_obj:
             try:
@@ -133,7 +137,9 @@ def score_boundary_detection(completion_text: str, gold_answer: Dict[str, Any], 
                 pass
 
     if pred_t is None:
-        # Regex fallback for timestamp
+        if not allow_fallback:
+            return 0.0, 0.0
+        # Regex fallback for timestamp (debug only — can match stray numbers in reasoning)
         m = re.search(r"(\d+(?:\.\d+)?)\s*(?:s|sec|seconds)?\b", completion_text)
         if m:
             try:
@@ -149,12 +155,13 @@ def score_boundary_detection(completion_text: str, gold_answer: Dict[str, Any], 
     return task_reward, format_reward
 
 
-def score_temporal_localization(completion_text: str, gold_answer: Dict[str, Any]) -> Tuple[float, float]:
+def score_temporal_localization(completion_text: str, gold_answer: Dict[str, Any], allow_fallback: bool = False) -> Tuple[float, float]:
     """
     Evaluates temporal localization.
     Gold: {"start": float, "end": float}
     Pred JSON: {"explanation": "...", "answer": {"start": float, "end": float}}
     Reward: tIoU (Intersection over Union)
+    Strict mode (allow_fallback=False): only JSON answer field counts (GRPO_ISSUES.md P2-4).
     """
     try:
         gt_start = float(gold_answer["start"])
@@ -184,7 +191,9 @@ def score_temporal_localization(completion_text: str, gold_answer: Dict[str, Any
                 pass
 
     if pred_start is None or pred_end is None:
-        # Regex fallback: find two numbers representing start and end
+        if not allow_fallback:
+            return 0.0, 0.0
+        # Regex fallback: find two numbers representing start and end (debug only — can match reasoning numbers)
         nums = re.findall(r"\b(\d+(?:\.\d+)?)\b", completion_text)
         if len(nums) >= 2:
             try:
@@ -209,11 +218,12 @@ def score_temporal_localization(completion_text: str, gold_answer: Dict[str, Any
     return task_reward, format_reward
 
 
-def score_phase_recognition(completion_text: str, gold_answer: Union[Dict[str, Any], str]) -> Tuple[float, float]:
+def score_phase_recognition(completion_text: str, gold_answer: Union[Dict[str, Any], str], allow_fallback: bool = False) -> Tuple[float, float]:
     """
     Evaluates phase recognition / timestamp_to_phase.
     Gold: {"phase_id": "P0X", "phase_name": "..."} or "P0X"
     Reward: 1.0 if normalized phase matches, else 0.0
+    Strict mode (allow_fallback=False): only JSON answer field counts (GRPO_ISSUES.md P2-4).
     """
     if isinstance(gold_answer, dict):
         gt_phase = normalize_phase(gold_answer.get("phase_id", gold_answer.get("phase", "")))
@@ -240,7 +250,10 @@ def score_phase_recognition(completion_text: str, gold_answer: Union[Dict[str, A
                 format_reward = 1.0
 
     if pred_phase is None:
-        # Regex search for P01..P13
+        if not allow_fallback:
+            # In strict mode, no regex fallback; must have JSON answer. Return 0.
+            return 0.0, 0.0
+        # Regex search for P01..P13 in full text (debug only — can match reasoning mention)
         pred_phase = normalize_phase(completion_text)
 
     is_correct = False
@@ -258,34 +271,56 @@ def compute_reward_single(
     correct_answer: Any,
     question_type: str,
     fmt_weight: float = 0.05,
+    *,
+    allow_fallback: bool = False,
 ) -> Dict[str, float]:
     """
     Computes total reward, task reward, and format reward for a single completion.
     Total reward = task_reward + fmt_weight * format_reward
+
+    Dispatch is strictly by question_type (GRPO_ISSUES.md P3-1). Fallback parsing inside
+    scorers is off by default (allow_fallback=False) so only JSON answer field counts;
+    permissive regex fallbacks are only for debugging/eval if explicitly enabled.
+
+    Args:
+        allow_fallback: if False, scorers ignore regex fallback and require valid JSON answer field.
+                        if True, scorers may attempt regex extraction from raw text.
     """
     qtype = (question_type or "").strip().lower()
 
-    if qtype in {"step_identification", "visual_observation", "instrument_identification"} or isinstance(correct_answer, str):
-        task_r, fmt_r = score_mcq_reward(completion_text, correct_answer)
+    # Strict dispatcher: MCQ only for explicit MCQ qtypes (P3-1). Unknown qtypes are warned, not coerced via isinstance(str).
+    # Pass allow_fallback through so strict JSON-only scoring when False.
+    if qtype in {"step_identification", "visual_observation", "instrument_identification"}:
+        task_r, fmt_r = score_mcq_reward(completion_text, correct_answer, allow_fallback=allow_fallback)
     elif qtype == "boundary_detection":
-        task_r, fmt_r = score_boundary_detection(completion_text, correct_answer)
+        task_r, fmt_r = score_boundary_detection(completion_text, correct_answer, allow_fallback=allow_fallback)
     elif qtype == "temporal_localization":
-        task_r, fmt_r = score_temporal_localization(completion_text, correct_answer)
+        task_r, fmt_r = score_temporal_localization(completion_text, correct_answer, allow_fallback=allow_fallback)
     elif qtype in {"timestamp_to_phase", "contextual_phase_recognition"}:
-        task_r, fmt_r = score_phase_recognition(completion_text, correct_answer)
+        task_r, fmt_r = score_phase_recognition(completion_text, correct_answer, allow_fallback=allow_fallback)
     else:
-        # Generic fallback
-        if isinstance(correct_answer, str):
-            task_r, fmt_r = score_mcq_reward(completion_text, correct_answer)
-        elif isinstance(correct_answer, dict):
+        # Unknown qtype: log once and score via inferred type from GT, but keep strict JSON path.
+        import logging as _logging
+        _logger = _logging.getLogger(__name__)
+        # Use warning with deduplication (simple set)
+        if not hasattr(compute_reward_single, "_warned_qtypes"):
+            compute_reward_single._warned_qtypes = set()
+        if qtype not in compute_reward_single._warned_qtypes:
+            _logger.warning(f"compute_reward_single: unknown question_type='{question_type}' -> inferring from gold Answer; expected one of step/visual/instrument/boundary/temporal/timestamp/contextual")
+            compute_reward_single._warned_qtypes.add(qtype)
+        # Infer from gold answer structure only (not blind string->MCQ)
+        if isinstance(correct_answer, dict):
             if "timestamp" in correct_answer:
-                task_r, fmt_r = score_boundary_detection(completion_text, correct_answer)
+                task_r, fmt_r = score_boundary_detection(completion_text, correct_answer, allow_fallback=allow_fallback)
             elif "start" in correct_answer and "end" in correct_answer:
-                task_r, fmt_r = score_temporal_localization(completion_text, correct_answer)
+                task_r, fmt_r = score_temporal_localization(completion_text, correct_answer, allow_fallback=allow_fallback)
             elif "phase_id" in correct_answer or "phase" in correct_answer:
-                task_r, fmt_r = score_phase_recognition(completion_text, correct_answer)
+                task_r, fmt_r = score_phase_recognition(completion_text, correct_answer, allow_fallback=allow_fallback)
             else:
                 task_r, fmt_r = 0.0, 0.0
+        elif isinstance(correct_answer, str):
+            # Unknown qtype but string GT: still treat as MCQ but log; require JSON
+            task_r, fmt_r = score_mcq_reward(completion_text, correct_answer, allow_fallback=allow_fallback)
         else:
             task_r, fmt_r = 0.0, 0.0
 
@@ -302,12 +337,14 @@ def compute_grpo_rewards(
     correct_answers: List[Any],
     question_types: List[str],
     fmt_weight: float = 0.05,
+    allow_fallback: bool = False,
 ) -> List[float]:
     """
     Computes rewards for a batch of completions.
+    Strict JSON-only by default (allow_fallback=False, GRPO_ISSUES.md P2-4).
     """
     rewards = []
     for comp, ans, qtype in zip(completions, correct_answers, question_types):
-        res = compute_reward_single(comp, ans, qtype, fmt_weight=fmt_weight)
+        res = compute_reward_single(comp, ans, qtype, fmt_weight=fmt_weight, allow_fallback=allow_fallback)
         rewards.append(res["reward"])
     return rewards

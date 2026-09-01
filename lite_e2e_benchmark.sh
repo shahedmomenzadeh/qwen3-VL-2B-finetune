@@ -186,9 +186,9 @@ if [ "$SKIP_SWEEP" != "1" ]; then
                 $VENV_PYTHON -u src/train/train_grpo.py \
                     --model_id "$MODEL_ID" --data_path "data/lite_e2e/grpo_train.json" --eval_path "data/lite_e2e/grpo_val.json" \
                     --image_folder "dataset_grpo" --output_dir "$SWEEP_OUT_G/out" \
-                    --bits "$BITS" --lora_enable True --vision_lora True --use_dora False --lora_rank 32 --lora_alpha 64 --lora_dropout 0.05 --num_lora_modules -1 --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
+                    --bits "$BITS" --lora_enable True --vision_lora True --use_dora False --lora_rank 32 --lora_alpha 64 --lora_dropout 0.0 --num_lora_modules -1 --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
                     --freeze_vision_tower True --freeze_llm True --freeze_merger False \
-                    --bf16 True --fp16 False --tf32 True --disable_flash_attn2 True --use_liger_kernel True \
+                    --bf16 True --fp16 False --tf32 True --disable_flash_attn2 True --use_liger_kernel False \
                     --max_steps 1 --num_generations "$NUM_GENERATIONS" --per_device_train_batch_size 1 --gradient_accumulation_steps 1 --max_completion_length "$MAX_COMPLETION_LENGTH" \
                     --learning_rate 1e-4 --vision_lr 2e-6 --merger_lr 1e-5 --beta 0.04 --temperature 0.9 --top_p 1.0 --weight_decay 0.0 --warmup_steps 0 --lr_scheduler_type constant \
                     --video_min_pixels 65536 --video_max_pixels "$vmax" --nframes "$nframes" \
@@ -285,9 +285,9 @@ run_with_monitor "grpo-train" "$GRPO_BENCH" \
     $VENV_PYTHON -u src/train/train_grpo.py \
         --model_id "$SFT_MERGED" --data_path "data/lite_e2e/grpo_train.json" --eval_path "data/lite_e2e/grpo_val.json" \
         --image_folder "dataset_grpo" --output_dir "$GRPO_OUT" \
-        --bits "$BITS" --lora_enable True --vision_lora True --use_dora False --lora_rank 32 --lora_alpha 64 --lora_dropout 0.05 --num_lora_modules -1 --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
+        --bits "$BITS" --lora_enable True --vision_lora True --use_dora False --lora_rank 32 --lora_alpha 64 --lora_dropout 0.0 --num_lora_modules -1 --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
         --freeze_vision_tower True --freeze_llm True --freeze_merger False \
-        --bf16 True --fp16 False --tf32 True --disable_flash_attn2 True --use_liger_kernel True \
+        --bf16 True --fp16 False --tf32 True --disable_flash_attn2 True --use_liger_kernel False \
         --max_steps "$GRPO_STEPS" --num_generations "$NUM_GENERATIONS" --per_device_train_batch_size 1 --gradient_accumulation_steps 1 --max_completion_length "$MAX_COMPLETION_LENGTH" \
         --learning_rate 1e-4 --vision_lr 2e-6 --merger_lr 1e-5 --beta 0.04 --temperature 0.9 --top_p 1.0 --weight_decay 0.0 --warmup_steps 0 --lr_scheduler_type constant \
         --video_min_pixels 65536 --video_max_pixels "$VMAX_GRPO" --nframes "$NFRAMES_GRPO" \

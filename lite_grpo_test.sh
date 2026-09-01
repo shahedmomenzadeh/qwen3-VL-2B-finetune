@@ -172,7 +172,7 @@ log "Starting GRPO probe (G=4, nframes=8, max_completion=1024, rank=32, samples=
     --use_dora False \
     --lora_rank 32 \
     --lora_alpha 64 \
-    --lora_dropout 0.05 \
+    --lora_dropout 0.0 \
     --num_lora_modules -1 \
     --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
     --freeze_vision_tower True \
@@ -180,7 +180,7 @@ log "Starting GRPO probe (G=4, nframes=8, max_completion=1024, rank=32, samples=
     --freeze_merger False \
     --bf16 True --fp16 False --tf32 True \
     --disable_flash_attn2 True \
-    --use_liger_kernel True \
+    --use_liger_kernel False \
     --max_steps "$GRPO_MAX_STEPS" \
     --num_generations 4 \
     --per_device_train_batch_size 1 \

@@ -32,12 +32,17 @@ class QwenGRPOTrainer(Trainer):
     - Deterministic rule-based scoring (MCQ accuracy, temporal IoU, exponential boundary decay, phase exact match).
     - Per-parameter-group learning rates (LLM, Vision Tower, Merger).
     - QLoRA (4-bit/8-bit) and 16-bit LoRA optimization.
-    - Loss variants: DAPO (default) / GRPO.
+    - One-update GRPO: each rollout is used for a single optimizer step (on-policy + KL),
+      not PPO-style multi-epoch reuse. With this design ratio ~=1 at step start is expected
+      and clipping is rarely active; learning signal comes from advantage * grad(logp) and KL.
+      If multi-epoch PPO-GRPO is desired, a rollout buffer with stored old logprobs must be added.
     Fixed implementation (2026-09):
     - Old policy logprobs computed via separate no_grad forward (not detach of current).
     - Per-token PPO ratio with clipping (not sequence-mean ratio).
     - Reference KL via base SFT (LoRA disabled) when beta>0.
-    - Proper diagnostics: ratio stats, clip_fraction, approx_kl.
+    - Zero-variance groups yield zero advantage (not rewards-0.5).
+    - Proper diagnostics: ratio stats, clip_fraction, approx_kl, zero_std_group_fraction, reward min/max.
+    - Token-mean normalization is global token-average (not aliased as DAPO without DAPO objective).
     """
 
     def __init__(
@@ -53,7 +58,17 @@ class QwenGRPOTrainer(Trainer):
         self.beta = getattr(self.args, "beta", 0.04)
         self.temperature = getattr(self.args, "temperature", 0.9)
         self.top_p = getattr(self.args, "top_p", 1.0)
-        self.loss_type = getattr(self.args, "liger_grpo_loss_type", "dapo") or "dapo"
+        # Legacy Liger loss type flag — kept for backward compat but not used;
+        # our GRPO loss is custom manual (not LigerFusedLinearGRPOLoss). If you need Liger,
+        # integrate LigerFusedLinearGRPOLoss explicitly. Warn once if user sets non-default.
+        self.loss_type = getattr(self.args, "liger_grpo_loss_type", None) or "dapo"
+        _liger_requested = getattr(self.args, "liger_grpo_loss_type", None) is not None
+        _use_liger_kernel = getattr(self.args, "use_liger_kernel", False) or getattr(self.args, "use_liger_loss", False)
+        if _liger_requested or _use_liger_kernel:
+            logger.warning(
+                "QwenGRPOTrainer uses custom manual GRPO loss (token-mean PPO clip + k3 KL), "
+                "not LigerFusedLinearGRPOLoss. liget_* flags are no-ops here (see GRPO_ISSUES.md P2-1/2)."
+            )
         # PPO clip epsilon
         self.epsilon = 0.2
 
@@ -319,10 +334,15 @@ class QwenGRPOTrainer(Trainer):
         group_stds = rewards_grouped.std(dim=-1, keepdim=True)
 
         std_mask = group_stds > 1e-6
-        norm_std = torch.where(std_mask, group_stds, torch.ones_like(group_stds))
-        advantages = (rewards_grouped - group_means) / (norm_std + 1e-4)
-        zero_std_advantages = rewards_grouped - 0.5
-        advantages = torch.where(std_mask, advantages, zero_std_advantages)
+        # Group-relative normalization; zero-variance groups get zero advantage (no relative preference).
+        # Previously used (rewards-0.5) which injected absolute-reward PG signal; removed (see GRPO_ISSUES.md P0-1).
+        advantages = torch.where(
+            std_mask,
+            (rewards_grouped - group_means) / (group_stds + 1e-4),
+            torch.zeros_like(rewards_grouped),
+        )
+        # Diagnostic: fraction of groups with zero variance (no learning signal)
+        zero_std_group_fraction = (~std_mask.squeeze(-1)).float().mean() if std_mask.numel() > 0 else torch.tensor(0.0, device=device)
         advantages = advantages.view(-1)  # (batch_size * G)
 
         # ── Step 4: Prepare full forward kwargs & masks ───────────
@@ -344,8 +364,22 @@ class QwenGRPOTrainer(Trainer):
                 full_forward_kwargs[k] = expanded_list
 
         # Helper to compute per-token logprobs for a given model state
+        # Mask: exclude PAD. If EOS exists, tokens after first EOS are already PAD when using
+        # generate(pad_token_id != eos_token_id), but we also explicitly mask after first EOS for safety.
         shift_labels = completion_ids.contiguous()  # (B*G, L)
-        completion_mask = (shift_labels != tokenizer.pad_token_id).to(torch.float32)  # (B*G, L)
+        # EOS-aware mask: valid until and including first EOS, then 0. Falls back to PAD-only if no EOS.
+        # Note: generate(pad_token_id != eos_token_id) already pads after EOS with PAD, but we mask explicitly
+        # to avoid any stray tokens after EOS contributing to loss.
+        eos_id = tokenizer.eos_token_id
+        if eos_id is not None and completion_ids.numel() > 0:
+            is_eos = (completion_ids == eos_id)  # (B*G, L) bool
+            eos_cumsum = is_eos.cumsum(dim=-1)  # 0 before first EOS, 1 at/after first EOS, 2 after second etc.
+            # Valid if before first EOS (cumsum==0) OR at first EOS (cumsum==1 & is_eos). Tokens after first EOS (cumsum>=1 but not first EOS) masked.
+            eos_mask = ((eos_cumsum == 0) | ((eos_cumsum == 1) & is_eos)).float()  # (B*G, L)
+            pad_mask = (shift_labels != tokenizer.pad_token_id).float()
+            completion_mask = (pad_mask * eos_mask).to(torch.float32)  # (B*G, L)
+        else:
+            completion_mask = (shift_labels != tokenizer.pad_token_id).to(torch.float32)  # (B*G, L)
 
         # ── 4a: OLD policy per-token logprobs (no_grad, LoRA enabled) ───────────
         with torch.no_grad():
@@ -416,8 +450,9 @@ class QwenGRPOTrainer(Trainer):
         surr2 = torch.clamp(per_token_ratio, 1.0 - eps, 1.0 + eps) * advantages_expanded
         per_token_policy_loss = -torch.min(surr1, surr2)  # (B*G, L)
 
-        # DAPO-style: normalize over all completion tokens (total loss / total valid tokens)
-        # GRPO-style alternative would be per-sequence mean then batch mean; DAPO is more stable for variable lengths.
+        # Token-mean normalization: global token-average (sum(loss*mask)/sum(mask)).
+        # This is the correct stable choice for variable-length completions.
+        # Previously labeled "DAPO-style"; renamed to avoid implying full DAPO objective.
         denom = completion_mask.sum().clamp_min(1.0)
         policy_loss = (per_token_policy_loss * completion_mask).sum() / denom
 
@@ -473,6 +508,11 @@ class QwenGRPOTrainer(Trainer):
             mean_reward = rewards_tensor.mean()
             # Use group_stds.mean for reward_std logging compatibility
             reward_std_mean = group_stds.mean() if group_stds.numel() > 0 else torch.tensor(0.0, device=device)
+            reward_min = rewards_tensor.min() if rewards_tensor.numel() > 0 else torch.tensor(0.0, device=device)
+            reward_max = rewards_tensor.max() if rewards_tensor.numel() > 0 else torch.tensor(0.0, device=device)
+            # Discrete reward fractions (binary-like rewards common)
+            fraction_reward_zero = (rewards_tensor < 0.01).float().mean() if rewards_tensor.numel() > 0 else torch.tensor(0.0, device=device)
+            fraction_reward_one = (rewards_tensor > 0.99).float().mean() if rewards_tensor.numel() > 0 else torch.tensor(0.0, device=device)
 
             # Entropy approximation: -mean(logp) over completion tokens (lower = more confident)
             # Use current per_token_logps
@@ -490,6 +530,11 @@ class QwenGRPOTrainer(Trainer):
                     "total_loss": total_loss.detach().item(),
                     "reward_mean": mean_reward.detach().item() if isinstance(mean_reward, torch.Tensor) else float(mean_reward),
                     "reward_std": reward_std_mean.detach().item() if isinstance(reward_std_mean, torch.Tensor) else float(reward_std_mean),
+                    "reward_min": reward_min.detach().item(),
+                    "reward_max": reward_max.detach().item(),
+                    "fraction_reward_zero": fraction_reward_zero.detach().item(),
+                    "fraction_reward_one": fraction_reward_one.detach().item(),
+                    "zero_std_group_fraction": zero_std_group_fraction.detach().item() if isinstance(zero_std_group_fraction, torch.Tensor) else float(zero_std_group_fraction),
                     "advantage_mean": adv_mean.detach().item(),
                     "advantage_std": adv_std.detach().item(),
                     "ratio_mean": ratio_mean.detach().item(),
