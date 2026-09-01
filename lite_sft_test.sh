@@ -245,3 +245,18 @@ log "Lite SFT benchmark completed successfully"
 log "Verifying LoRA weights..."
 $VENV_PYTHON check_lora_weights.py "$OUTPUT_DIR" || warn "LoRA check failed"
 
+# Merge LoRA adapter into base model for GRPO stage (output/lite_sft_test/merged)
+MERGED_DIR="$BENCH_DIR/merged"
+if [ -f "$OUTPUT_DIR/adapter_config.json" ]; then
+    log "Merging SFT adapter -> $MERGED_DIR ..."
+    rm -rf "$MERGED_DIR"
+    $VENV_PYTHON src/merge_lora.py --model-path "$OUTPUT_DIR" --model-base "$MODEL_ID" --save-model-path "$MERGED_DIR" --safe-serialization
+    if [ -f "$MERGED_DIR/config.json" ]; then
+        log "Merged model saved to $MERGED_DIR"
+    else
+        warn "Merge failed — $MERGED_DIR/config.json not found"
+    fi
+else
+    warn "No adapter found at $OUTPUT_DIR, skipping merge"
+fi
+
