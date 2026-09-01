@@ -20,26 +20,13 @@ from transformers.pytorch_utils import (
 )
 from transformers.trainer_utils import EvalLoopOutput
 from torch.utils.data import DataLoader
-from train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lora_maybe_zero_3
+from train.train_utils import (
+    extract_tensor_cpu as maybe_zero_3,
+    get_peft_state_maybe_zero_3,
+    get_peft_state_non_lora_maybe_zero_3,
+)
 
 from constants import IGNORE_INDEX
-
-
-def maybe_zero_3(param, ignore_status=False, name=None):
-    if hasattr(param, "ds_id"):
-        try:
-            from deepspeed import zero
-            from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
-            if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
-                if not ignore_status:
-                    print(name, "no ignore status")
-            with zero.GatheredParameters([param]):
-                param = param.data.detach().cpu().clone()
-        except ImportError:
-            param = param.detach().cpu().clone()
-    else:
-        param = param.detach().cpu().clone()
-    return param
 
 
 @dataclass

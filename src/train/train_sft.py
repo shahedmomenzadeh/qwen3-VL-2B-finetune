@@ -39,7 +39,8 @@ def find_target_linear_names(model, num_lora_modules=-1, lora_namespan_exclude=[
 
 def set_requires_grad(parameters, requires_grad):
     for p in parameters:
-        p.requires_grad = requires_grad
+        if p.dtype.is_floating_point or p.dtype.is_complex:
+            p.requires_grad = requires_grad
 
 def configure_vision_tower(model, training_args, compute_dtype, device):
     backbone = get_qwen_vl_generation_backbone(model)
@@ -183,12 +184,12 @@ def train():
 
         if not training_args.freeze_vision_tower:
             for name, param in model.named_parameters():
-                if "visual" in name:
+                if "visual" in name and (param.dtype.is_floating_point or param.dtype.is_complex):
                     param.requires_grad = True
 
         if not training_args.freeze_merger:
             for name, param in model.named_parameters():
-                if "merger" in name:
+                if "merger" in name and (param.dtype.is_floating_point or param.dtype.is_complex):
                     param.requires_grad = True
 
     processor = AutoProcessor.from_pretrained(model_args.model_id)
