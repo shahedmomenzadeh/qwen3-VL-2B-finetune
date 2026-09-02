@@ -1,7 +1,11 @@
-# SFT Training Configurations — 24 GB vs 32 GB VRAM
+# SFT/GRPO Training Configurations — 24 GB vs 32 GB VRAM (prod) + 8 GB Lite
 
-Qwen3-VL-2B-Instruct QLoRA SFT for cataract surgery video understanding.  
-Target: **100 frames** across 12-minute full surgical videos (~1 frame every 7 seconds).
+Qwen3-VL-2B-Instruct QLoRA for cataract surgery video understanding.
+
+**Current defaults (48 GB single GPU, `train_sft.sh`/`train.sh`): `SFT NFRAMES 60` / `GRPO NFRAMES 32 G=5 vmax 131072→262144`** (~7.6k / ~4.1k visual tok/sample, SFT `8192` limit).  
+This doc’s `100`-frame configs are **high-coverage pushes** for 24/32 GB cards (~1 frame/7s on 12-min full videos). Lite `8-16` frames tested on RTX 4060 8GB (`lite_e2e_benchmark.sh`).
+
+> **Note:** `train_sft.sh` default `60` fits `8192` at `131072` (`~7.6k`); `100/262144` needs `max_seq_length 16384` or `131072`. `GRPO_ISSUES.md P1-1` `lora_dropout 0.0` GRPO / `0.05` SFT; `use_liger_kernel True` SFT / `False` GRPO (custom loss).
 
 ---
 
@@ -133,12 +137,13 @@ These are already defaults in `train_sft.sh` and do not need to be passed explic
 | `freeze_vision_tower` | True | Only train LoRA adapters, not full vision encoder |
 | `freeze_llm` | True | Only train LoRA adapters, not full LLM |
 | `freeze_merger` | True | Only train LoRA adapters, not the connector |
-| `max_seq_length` | 32768 | Accommodates up to ~16K visual tokens + text |
-| `weight_decay` | 0.1 | Regularization |
-| `lr_scheduler` | cosine | Standard for SFT |
-| `warmup_steps` | 10 | Short warmup |
-| `lora_dropout` | 0.05 | Light regularization |
-| `dataloader_num_workers` | 4 | Parallel data loading |
+| `max_seq_length` | 8192 (SFT) | Truncates; `60/262144` ~15.7k >8192 → use `131072` or raise to `16384` |
+| `weight_decay` | 0.1 SFT / 0.0 GRPO | |
+| `lr_scheduler` | cosine SFT / constant GRPO | |
+| `warmup_steps` | 10 SFT / 0 GRPO | |
+| `lora_dropout` | 0.05 SFT / 0.0 GRPO | GRPO deterministic old/current |
+| `beta` | — | 0.04 GRPO KL |
+| `dataloader_num_workers` | 4 | |
 
 ---
 
@@ -165,11 +170,15 @@ Batch size 2 provides smoother gradients and better GPU utilization. The effecti
 ## Monitoring During Training
 
 ```bash
-# In a separate terminal — real-time GPU monitoring
 watch -n 1 nvidia-smi
-
-# Or install nvitop for a better view
 pip install nvitop && nvitop
+# Lite benchmark: polled @0.5s → bench_*/gpu.csv + time -v → output/lite_benchmark/report.md (GPU-hours)
 ```
 
-Check peak VRAM during the **first 5-10 training steps**. If peak stays below 22 GB (24 GB setup) or 30 GB (32 GB setup), you're safe for the entire run.
+Check first 5-10 steps. Lite `8GB` sweep `output/lite_benchmark/vram_sweep.csv`: `SFT 16/131072 3056MiB`, `GRPO G4 16/131072 7914MiB`, `16/262144 GRPO OOM`.
+
+## Lite / GRPO Notes
+
+- `GRPO` one-update (`ratio≈1`, `grpo_loss≈0` expected) logs `reward_mean/min/max`, `zero_std_group_fraction`, `advantage_mean/std`, `ratio_mean/std/min/max`, `clip_fraction`, `approx_kl`, `kl_loss`, `total_loss`, `comp_len_mean`, `entropy_proxy`, `grad_norm`.
+- Video max `GRPO 210s` (`eAIZjIKBK_c/clip_09.mp4`), `SFT 364s`, `avg 25.9s/38s`.
+- Tokens: `131072` ~`121 tok/frame`, `262144` ~`256` (`60/131072` `~7.6k`, `32/131072` `~4.1k` prompt, full `SFT 58M`/ep, `GRPO G5 98M` fwd `5.4M` loss).

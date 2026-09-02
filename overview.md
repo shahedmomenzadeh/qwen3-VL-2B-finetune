@@ -362,15 +362,17 @@ The base model weights remain frozen during LoRA training.
 
 # 7. LoRA Configuration
 
-The default LoRA configuration is:
+| Parameter | SFT | GRPO |
+|---|---:|---:|
+| LoRA Rank | 32 | 32 |
+| LoRA Alpha | 64 | 64 |
+| LoRA Dropout | **0.05** | **0.0** (deterministic old/current, `GRPO_ISSUES.md P1-1`) |
+| Target modules | 301 (LLM 196 + vision 96 + merger 2 + deepstack 6 + pos_embed 1) |
+| Excluded | `embed_tokens`, `lm_head` |
+| `use_dora` | False |
+| Quant | QLoRA 4-bit (`bnb_4bit_compute_dtype=bf16`, `double_quant True`) |
 
-| Parameter    | Value |
-| ------------ | ----: |
-| LoRA Rank    |    32 |
-| LoRA Alpha   |    64 |
-| LoRA Dropout |  0.05 |
-
-The alpha is configured at approximately **2× the LoRA rank**.
+Alpha `≈2× rank`. Base frozen; only `LoRA A/B` + `merger` trainable. Norm `float32`, `lm_head`/`embed_tokens` `float32` + `autocast(bf16)` for GRPO generate (fixes `BFloat16 vs Float`).
 
 LoRA adapters are applied across:
 
@@ -386,47 +388,42 @@ The base weights remain frozen, while the LoRA parameters are trainable.
 
 ---
 
-# 8. Training Parameters
+# 8. Training Parameters (48 GB default; lite `lite_e2e_benchmark.sh` uses 6/4 steps)
 
-The default training configuration is designed for a single GPU with approximately **48 GB VRAM**.
+| Parameter | SFT | GRPO |
+|---|---:|---:|
+| Batch per device | 4 (lite 1) | 1 |
+| Grad accum | 4 → eff 16 | 1 |
+| Epochs | 2 | 1 |
+| LR LLM / vision / merger | `1e-4` / `2e-6` / `1e-5` | same |
+| Weight decay | 0.1 | 0.0 |
+| Warmup | 10 | 0 |
+| Scheduler | cosine | constant |
+| `beta` (KL) | — | 0.04 (`0` disables ref) |
+| `G` generations | — | **5** prod / **4** lite 8GB |
+| `max_completion` | — | `128` bench / `1024` `lite_grpo_test.sh` |
+| `temperature`/`top_p` | — | `0.9` / `1.0` |
+| `bf16`/`tf32`/`grad_ckpt` | True/True/True (`use_reentrant False` with `vision_lora`) |
+| `use_liger_kernel` | True | **False** (custom manual token-mean loss, `GRPO_ISSUES.md P2-1`) |
+| `epsilon` clip | — | 0.2 per-token PPO |
+| One-update | — | `generate→old logprobs→loss→step→discard` (`ratio≈1`, `grpo_loss≈0` expected) |
+| Advantage | — | group-norm `(R-mean)/std`, zero-var → `0` + `zero_std_group_fraction` log |
 
-| Parameter                       |  Default |
-| ------------------------------- | -------: |
-| Batch size per device           |        4 |
-| Gradient accumulation           |        4 |
-| Effective global batch size     |       16 |
-| Number of GPUs                  |        1 |
-| SFT epochs                      |        2 |
-| LLM LoRA learning rate          | 1 × 10⁻⁴ |
-| Vision-tower LoRA learning rate | 2 × 10⁻⁶ |
-| Merger LoRA learning rate       | 1 × 10⁻⁵ |
-| Weight decay                    |      0.1 |
-| Warmup steps                    |       10 |
-| LR scheduler                    |   Cosine |
-
-The different learning rates allow the language model, vision components, and merger components to be optimized at different scales.
+Loss: token-mean `sum(loss*mask)/sum(mask)` (global), `k3 KL = exp(ref-current)-(ref-current)-1`, `total = policy + beta*KL`. Diagnostics `reward_min/max`, `fraction_zero/one`.
 
 ---
 
 # 9. Video Configuration
 
-Video inputs are sampled into a fixed maximum number of frames.
+| Parameter | SFT (prod) | GRPO (prod) | Lite |
+|---|---:|---:|---:|
+| `NFRAMES` max | **60** | **32** | `32` SFT / `8-16` GRPO (8GB) |
+| `VIDEO_MIN_PIXELS` | `131072` (`128*32*32`) | same | same |
+| `VIDEO_MAX_PIXELS` | `262144` (`256*32*32`) | same | sweep `131072/262144` |
+| `MAX_SEQ_LENGTH` | `8192` | `prompt+completion` | — |
+| Capping | `probe_total_frames` → `min(nframes, total)` (≥2) |
 
-### Default
-
-**Maximum frames per video: 60**
-
-The actual number of frames is automatically capped when a video contains fewer frames than the configured maximum.
-
-An alternative approach is to specify the sampling rate using FPS instead of a fixed frame count.
-
-| Parameter            | Default |
-| -------------------- | ------: |
-| Maximum frames       |      60 |
-| Minimum video pixels | 131,072 |
-| Maximum video pixels | 262,144 |
-
-The minimum and maximum pixel constraints control the resolution of the visual input.
+`FPS` alternative to `NFRAMES`. Visual tok/frame `≈121` (`131072` ~`362²`) / `≈256` (`262144` ~`512²`) (`ceil(H/32)*ceil(W/32)`). SFT `60/131072` `~7.6k`/sample (fits 8192), `60/262144` `~15.7k` >8192 truncated. GRPO `32/131072` prompt `~4.1k` → per-gen `4.5k (128)` / `5.4k (1024)`. Full dataset `GRPO max 210s` clip (`eAIZjIKBK_c/clip_09.mp4`), `avg 25.9s` GRPO / `38s` SFT, SFT full `364s`.
 
 ---
 
@@ -588,17 +585,20 @@ Merge the GRPO LoRA adapter into the SFT model. This produces the **final GRPO m
 
 ---
 
-# 17. VRAM Requirements
+# 17. VRAM & Tokens (RTX 4060 8GB sweep `output/lite_benchmark/vram_sweep.csv`, `nvidia-smi @0.5s`)
 
-Approximate VRAM usage observed during testing:
+| Config `BITS=4 bf16 r32` | VRAM peak | Tok/sample worst |
+|---|---:|---|
+| `SFT 8/131072 b1` / `GRPO G4 8/131072` | `3056MiB` / `7942MiB` | `~1.4k` / `~4.5k`/gen |
+| `SFT 16/131072` / `GRPO 16/131072` | `3056MiB` / `7914MiB` | `~2.5k` / `~6k`/gen |
+| `SFT 16/262144` / `GRPO 16/262144` | `3962MiB` / **OOM `7924MiB`** | `~4.6k` |
+| `SFT 32/131072` (bench 6 steps) | ok | `~4.3k` |
+| `SFT 60/131072 b4` (48GB prod) | `~10-12GB` est | `~7.6k` fits 8192 |
+| `SFT 60/262144 b4` | `~12-15GB` | `~15.7k` >8192 truncated |
 
-| Configuration                      | Approx. VRAM | Purpose                |
-| ---------------------------------- | -----------: | ---------------------- |
-| 4-bit, 8 frames, batch 1, rank 4   |        ~2 GB | Minimal smoke test     |
-| 4-bit, 32 frames, batch 1, rank 16 |      ~4–5 GB | Recommended small test |
-| 4-bit, 60 frames, batch 4, rank 32 |    ~10–15 GB | Default configuration  |
+Full: SFT `7663*7.6k≈58M`/ep (`×2≈117M`), GRPO `32/131072 G5 256` fwd `4252*5*4.6k≈98M`/ep loss `5.4M` (`1024→114M/21M`). Logs `bench_*/gpu.csv+time.log`, report `output/lite_benchmark/report.md` (GPU-hours `sec/step × full_steps`).
 
-The reported VRAM values are approximate and depend on the GPU, video resolution, sequence length, and other runtime conditions.
+Lite: `lite_sft_test.sh` `~2GB`, `lite_grpo_test.sh G4 8/131072 1024` `~7.9GB` `~9min` 30 samples; `lite_e2e_benchmark.sh` sweep `8` trials before lite run.
 
 ---
 
