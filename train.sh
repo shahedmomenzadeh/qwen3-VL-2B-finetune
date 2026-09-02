@@ -37,8 +37,8 @@ DATA_PREFIX="${DATA_PREFIX:-data}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/output}"
 
 BITS="${BITS:-4}"
-LORA_RANK="${LORA_RANK:-32}"
-LORA_ALPHA="${LORA_ALPHA:-64}"
+LORA_RANK="${LORA_RANK:-16}"
+LORA_ALPHA="${LORA_ALPHA:-32}"
 LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
 
 BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-2}"
@@ -109,9 +109,9 @@ if [ ! -f "${SFT_OUT}/adapter_config.json" ]; then
         --use_dora False \
         --lora_rank "$LORA_RANK" \
         --lora_alpha "$LORA_ALPHA" \
-        --lora_dropout "$LORA_DROPOUT" \
+        --lora_dropout 0.05 \
         --num_lora_modules -1 \
-        --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
+        --lora_namespan_exclude "['lm_head', 'embed_tokens', 'merger', 'pos_embed']" \
         --freeze_vision_tower True \
         --freeze_llm True \
         --freeze_merger False \
@@ -180,9 +180,9 @@ if [ ! -f "${GRPO_OUT}/adapter_config.json" ]; then
         --use_dora False \
         --lora_rank "$LORA_RANK" \
         --lora_alpha "$LORA_ALPHA" \
-        --lora_dropout "$LORA_DROPOUT" \
+        --lora_dropout 0.0 \
         --num_lora_modules -1 \
-        --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
+        --lora_namespan_exclude "['lm_head', 'embed_tokens', 'merger', 'pos_embed']" \
         --freeze_vision_tower True \
         --freeze_llm True \
         --freeze_merger False \

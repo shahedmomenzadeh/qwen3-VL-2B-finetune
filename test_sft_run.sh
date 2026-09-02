@@ -101,10 +101,10 @@ GRAD_ACCUM=1
 COMMON_ARGS=(
     --bits $BITS
     --lora_enable True --vision_lora True --use_dora False
-    --lora_rank $LORA_RANK --lora_alpha 32 --lora_dropout 0.0
+    --lora_rank $LORA_RANK --lora_alpha 32 --lora_dropout 0.05
     --num_lora_modules -1
-    --lora_namespan_exclude "['lm_head', 'embed_tokens']"
-    --freeze_vision_tower True --freeze_llm True --freeze_merger True
+    --lora_namespan_exclude "['lm_head', 'embed_tokens', 'merger', 'pos_embed']"
+    --freeze_vision_tower True --freeze_llm True --freeze_merger False
     --bf16 True --fp16 False --tf32 True
     --disable_flash_attn2 True
     --use_liger_kernel True

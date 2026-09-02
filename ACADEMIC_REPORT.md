@@ -2,7 +2,7 @@
 
 **Shahed Momenzadeh — Qwen3-VL-2B Finetune (SFT + GRPO) — September 2026**
 
-> Base model: `Qwen/Qwen3-VL-2B-Instruct` (`qwen3_vl`, patch 16, 2B params). Adaptation: QLoRA 4-bit (`r=32, α=64`, 301 adapter modules). Pipeline: **Base → SFT (dataset_sft, 60 frames) → GRPO (dataset_grpo, 32 frames, G=5, one-update, β=0.04) → Final GRPO Model**. Codebase: `grpo-stage-refactor` branch, `GRPO_ISSUES.md` P0–P3 audit.
+> Base model: `Qwen/Qwen3-VL-2B-Instruct` (`qwen3_vl`, patch 16, 2B). Adaptation: QLoRA 4-bit production baseline **`r=16, α=32`** (292 LoRA modules: LLM `q/k/v/o+gate/up/down` 196 + vision transformer linears 96; `merger` **full-trainable**, `visual.pos_embed`/`embed_tokens`/`lm_head` **frozen**). Pipeline: **Base → SFT (60 frames) → GRPO (32 frames, G=5, one-update, β=0.04) → Final**. `grpo-stage-refactor`, `GRPO_ISSUES.md` P0–P3 audit.
 
 ---
 
@@ -60,12 +60,10 @@ Total visual tokens per sample $N_{\text{vis}} = t \cdot h \cdot w$. The process
 
 We quantize the base weights $W_0$ to 4-bit NF4 (`BitsAndBytesConfig`, `bnb_4bit_compute_dtype = \text{bf16}$, `double_quant = \text{True}$) and freeze them. Trainable parameters are:
 
-- LoRA adapters on 301 `nn.Linear`/`nn.Embedding` modules (discovered via `find_target_linear_names`, excluding `embed_tokens` and `lm_head`): LLM 196 + vision 96 + merger 2 + deepstack merger 6 + `visual.pos_embed` 1.
-- The merger itself when `freeze_merger = \text{False}$ (production), trained at $1\!\times\!10^{-5}$ vs. $1\!\times\!10^{-4}$ (LLM) and $2\!\times\!10^{-6}$ (vision).
+- LoRA adapters on 292 `nn.Linear` modules (LLM `q/k/v/o`+`gate/up/down` 196 + vision transformer linears 96; `lora_namespan_exclude=[lm_head, embed_tokens, merger, pos_embed]`; `find_target_linear_names`).
+- The merger $\mathcal{M}$ when `freeze_merger = \text{False}$ (production baseline, full-trainable, no LoRA) at $10^{-5}$ vs. $10^{-4}$ (LLM) and $2\!\times\!10^{-6}$ (vision); `visual.pos_embed` frozen.
 
-Rank $r=32$, $\alpha=64$ ($\alpha/r = 2$), $\text{dropout}=0.05$ for SFT and $0.0$ for GRPO. The GRPO zero-dropout choice is algorithmic, not merely regularizational (Section 4.5). LayerNorm modules are kept in `float32` for stability; `lm_head` and `embed_tokens` are kept in `float32` to match (`src/train/train_{sft,grpo}.py:217$), with GRPO forwards wrapped in `torch.autocast(bf16)` to ensure `hidden$ (float32 from norm) and `lm_head.weight` (float32) execute in bf16 without the `BFloat16 vs Float` mismatch.
-
-Effective trainable scalars $\approx 40$–$60\,$M ($r=32$), vs. $\approx 10$–$15\,$M at $r=8$.
+Rank $r=16$, $\alpha=32$ ($\alpha/r=2$), dropout $0.05$ SFT / $0.0$ GRPO (deterministic old/current, §4.5). LLM targets: `q/k/v/o` + `gate/up/down` (196); vision: transformer linears `qkv/proj` + `fc1/fc2` (96); `merger` full-trainable (no LoRA, $\text{lr}=10^{-5}$), `visual.pos_embed` frozen. Total $292$ LoRA modules (vs. $301$ at $r=32$ with merger+pos_embed). $\approx 20$–$30\,$M trainable ($r=16$) vs. $40$–$60\,$M ($r=32$) and $10$–$15\,$M ($r=8$). Norm $float32$, `lm_head` $float32$ + `autocast(bf16)` fixes `BFloat16 vs Float`.
 
 ### 3.3 Stage 1: Supervised Fine-tuning
 
@@ -438,8 +436,10 @@ Future work includes PPO-style multi-epoch GRPO with an explicit `old`/`ref`/`cu
 |---|---|---|
 | Model | `model_id` | `Qwen/Qwen3-VL-2B-Instruct` |
 |  | `attn` | `sdpa` (`disable_flash_attn2 True` in lite) |
-| LoRA | `r` / `α` / `dropout` | `32` / `64` / `0.05` SFT, `0.0` GRPO |
-|  | `target_modules` | 301, `lora_namespan_exclude=[lm_head, embed_tokens]` |
+| LoRA | `r` / `α` / `dropout` | `16` / `32` / `0.05` SFT, `0.0` GRPO |
+|  | `target_modules` | 292, `exclude=[lm_head, embed_tokens, merger, pos_embed]` (LLM `q/k/v/o+gate/up/down` 196 + vision 96) |
+|  | `merger` | full-trainable (`freeze_merger False`) |
+|  | `pos_embed` | frozen |
 | Quant | `bits` | `4` (`nf4`, `double_quant`, `bnb_4bit_compute_dtype=bf16`) |
 | SFT | `nframes` / `v_min` / `v_max` / `max_seq` | `60` / `131072` / `262144` / `8192` |
 |  | `batch` / `grad_accum` / `epochs` | `4` / `4` (16 eff) / `2` |

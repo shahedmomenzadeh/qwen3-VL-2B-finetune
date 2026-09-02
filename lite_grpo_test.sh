@@ -170,11 +170,11 @@ log "Starting GRPO probe (G=4, nframes=8, max_completion=1024, rank=32, samples=
     --lora_enable True \
     --vision_lora True \
     --use_dora False \
-    --lora_rank 32 \
-    --lora_alpha 64 \
+    --lora_rank 16 \
+    --lora_alpha 32 \
     --lora_dropout 0.0 \
     --num_lora_modules -1 \
-    --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
+    --lora_namespan_exclude "['lm_head', 'embed_tokens', 'merger', 'pos_embed']" \
     --freeze_vision_tower True \
     --freeze_llm True \
     --freeze_merger False \

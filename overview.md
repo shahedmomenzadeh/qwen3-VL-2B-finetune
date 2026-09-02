@@ -362,17 +362,20 @@ The base model weights remain frozen during LoRA training.
 
 # 7. LoRA Configuration
 
-| Parameter | SFT | GRPO |
+| Parameter | SFT (prod baseline) | GRPO (prod baseline) |
 |---|---:|---:|
-| LoRA Rank | 32 | 32 |
-| LoRA Alpha | 64 | 64 |
-| LoRA Dropout | **0.05** | **0.0** (deterministic old/current, `GRPO_ISSUES.md P1-1`) |
-| Target modules | 301 (LLM 196 + vision 96 + merger 2 + deepstack 6 + pos_embed 1) |
-| Excluded | `embed_tokens`, `lm_head` |
-| `use_dora` | False |
-| Quant | QLoRA 4-bit (`bnb_4bit_compute_dtype=bf16`, `double_quant True`) |
+| LoRA Rank | **16** | **16** |
+| LoRA Alpha | **32** | **32** |
+| LoRA Dropout | **0.05** | **0.0** (deterministic, `P1-1`) |
+| LLM targets | `q/k/v/o` + `gate/up/down` (7×28=196) | same |
+| Vision targets | transformer linears `qkv/proj`+`fc1/fc2` (96) | same |
+| Merger | **full-trainable** (`freeze_merger False`, no LoRA) | **full-trainable** |
+| `pos_embed` | **frozen** (no LoRA) | **frozen** |
+| Frozen both | `embed_tokens`, `lm_head`, `visual.pos_embed`, base 2B | same |
+| `use_dora` | False | False |
+| Quant | QLoRA 4-bit `bf16` | same |
 
-Alpha `≈2× rank`. Base frozen; only `LoRA A/B` + `merger` trainable. Norm `float32`, `lm_head`/`embed_tokens` `float32` + `autocast(bf16)` for GRPO generate (fixes `BFloat16 vs Float`).
+`292` LoRA modules (196 LLM + 96 vision); merger trained full, not via LoRA. Norm `float32`, `lm_head` `float32` + `autocast`.
 
 LoRA adapters are applied across:
 
@@ -585,9 +588,9 @@ Merge the GRPO LoRA adapter into the SFT model. This produces the **final GRPO m
 
 ---
 
-# 17. VRAM & Tokens (RTX 4060 8GB sweep `output/lite_benchmark/vram_sweep.csv`, `nvidia-smi @0.5s`)
+# 17. VRAM & Tokens (RTX 4060 8GB sweep `vram_sweep.csv`, `r16` baseline; `r32` 301-module +~0.5GB)
 
-| Config `BITS=4 bf16 r32` | VRAM peak | Tok/sample worst |
+| Config `BITS=4 bf16 r16` (merger full, pos_embed frozen) | VRAM peak | Tok/sample worst |
 |---|---:|---|
 | `SFT 8/131072 b1` / `GRPO G4 8/131072` | `3056MiB` / `7942MiB` | `~1.4k` / `~4.5k`/gen |
 | `SFT 16/131072` / `GRPO 16/131072` | `3056MiB` / `7914MiB` | `~2.5k` / `~6k`/gen |

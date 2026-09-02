@@ -49,9 +49,9 @@ GRPO_DATASET_ROOT="${GRPO_DATASET_ROOT:-dataset_grpo}"
 
 # ── 3. Hyperparameters & Configuration ────────────────────────────────────────
 BITS="${BITS:-4}"
-LORA_RANK="${LORA_RANK:-32}"
-LORA_ALPHA="${LORA_ALPHA:-64}"
-LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
+LORA_RANK="${LORA_RANK:-16}"
+LORA_ALPHA="${LORA_ALPHA:-32}"
+LORA_DROPOUT="${LORA_DROPOUT:-0.0}"
 
 BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-2}"
 GRAD_ACCUM="${GRAD_ACCUM:-4}"
@@ -124,13 +124,13 @@ $VENV_PYTHON src/train/train_grpo.py \
     --lora_alpha "$LORA_ALPHA" \
     --lora_dropout "$LORA_DROPOUT" \
     --num_lora_modules -1 \
-    --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
+    --lora_namespan_exclude "['lm_head', 'embed_tokens', 'merger', 'pos_embed']" \
     --freeze_vision_tower True \
     --freeze_llm True \
     --freeze_merger False \
     --bf16 True --fp16 False --tf32 True \
     --disable_flash_attn2 $([ "$DISABLE_FLASH_ATTN2" = "1" ] && echo True || echo False) \
-    --use_liger_kernel $([ "$USE_LIGER" = "1" ] && echo True || echo False) \
+    --use_liger_kernel False \
     --num_train_epochs "$NUM_EPOCHS" \
     --num_generations "$NUM_GENERATIONS" \
     --per_device_train_batch_size "$BATCH_PER_DEVICE" \
@@ -142,9 +142,9 @@ $VENV_PYTHON src/train/train_grpo.py \
     --beta "$BETA" \
     --temperature "$TEMPERATURE" \
     --top_p "$TOP_P" \
-    --weight_decay 0.1 \
-    --warmup_steps 10 \
-    --lr_scheduler_type cosine \
+    --weight_decay 0.0 \
+    --warmup_steps 0 \
+    --lr_scheduler_type constant \
     --video_min_pixels "$VIDEO_MIN_PIXELS" \
     --video_max_pixels "$VIDEO_MAX_PIXELS" \
     $VIDEO_ARGS \

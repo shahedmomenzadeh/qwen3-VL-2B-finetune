@@ -167,10 +167,10 @@ MODEL_ID="${MODEL_ID:-Qwen/Qwen3-VL-2B-Instruct}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/output}"
 DATA_PREFIX="${DATA_PREFIX:-data}"
 
-# QLoRA
+# QLoRA — production baseline r=16 alpha=32 (merger full-trainable, pos_embed frozen)
 BITS="${BITS:-4}"
-LORA_RANK="${LORA_RANK:-64}"
-LORA_ALPHA="${LORA_ALPHA:-128}"
+LORA_RANK="${LORA_RANK:-16}"
+LORA_ALPHA="${LORA_ALPHA:-32}"
 LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
 
 # Batch (Optimized for 24 GB VRAM — effective batch = 1 * 16 = 16)
@@ -308,8 +308,8 @@ COMMON_ARGS=(
     --lora_enable True --vision_lora True --use_dora False
     --lora_rank "$LORA_RANK" --lora_alpha "$LORA_ALPHA" --lora_dropout "$LORA_DROPOUT"
     --num_lora_modules -1
-    --lora_namespan_exclude "['lm_head', 'embed_tokens']"
-    --freeze_vision_tower True --freeze_llm True --freeze_merger True
+    --lora_namespan_exclude "['lm_head', 'embed_tokens', 'merger', 'pos_embed']"
+    --freeze_vision_tower True --freeze_llm True --freeze_merger False
     --bf16 True --fp16 False --tf32 True
     $FLASH_ATTN_FLAG
     --use_liger_kernel True

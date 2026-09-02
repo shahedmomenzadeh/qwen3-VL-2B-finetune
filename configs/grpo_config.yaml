@@ -9,14 +9,14 @@ image_folder: "dataset_grpo"
 bits: 8                          # 8-bit QLoRA
 lora_enable: true
 vision_lora: true
-lora_rank: 32
-lora_alpha: 64
-lora_dropout: 0.05
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.0
 num_lora_modules: -1
-lora_namespan_exclude: "['lm_head', 'embed_tokens']"
+lora_namespan_exclude: "['lm_head', 'embed_tokens', 'merger', 'pos_embed']"
 
-# Freezing
-freeze_vision_tower: false
+# Freezing — embed/lm_head/pos_embed/base frozen, merger full-trainable
+freeze_vision_tower: true
 freeze_llm: true
 freeze_merger: false
 
@@ -34,16 +34,16 @@ max_completion_length: 512
 beta: 0.04                       # KL coefficient
 temperature: 0.9
 top_p: 1.0
-use_liger_kernel: true
-loss_type: "dapo"               # GRPO loss variant: dapo, grpo, bnpo, dr_grpo
+use_liger_kernel: false             # custom manual token-mean loss, not Liger
+# loss_type legacy no-op (custom per-token PPO k3 KL)
 
 # Learning
-learning_rate: 5e-6
+learning_rate: 1e-4
 vision_lr: 2e-6
 merger_lr: 1e-5
-weight_decay: 0.1
-warmup_steps: 10
-lr_scheduler_type: "cosine"
+weight_decay: 0.0
+warmup_steps: 0
+lr_scheduler_type: "constant"
 num_train_epochs: 1
 
 # Batch

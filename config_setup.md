@@ -17,8 +17,8 @@ This doc’s `100`-frame configs are **high-coverage pushes** for 24/32 GB cards
 | `VIDEO_MIN_PIXELS` | 98,304 (96×32²) | 131,072 (128×32²) |
 | `VIDEO_MAX_PIXELS` | 196,608 (192×32²) | 327,680 (320×32²) |
 | `BITS` | 4 (QLoRA) | 4 (QLoRA) |
-| `LORA_RANK` | 64 | 64 |
-| `LORA_ALPHA` | 128 | 128 |
+| `LORA_RANK` | **16** (prod baseline) | **16** |
+| `LORA_ALPHA` | **32** | **32** |
 | `BATCH_PER_DEVICE` | 1 | 2 |
 | `GRAD_ACCUM` | 16 | 8 |
 | `Effective Batch Size` | 16 | 16 |
@@ -37,7 +37,7 @@ This doc’s `100`-frame configs are **high-coverage pushes** for 24/32 GB cards
 | Component | Est. VRAM |
 |---|---|
 | Base model (4-bit NF4) | ~2.5 GB |
-| LoRA adapters (rank 64, bf16) | ~0.2 GB |
+| LoRA adapters (rank 16, bf16) | ~0.05 GB |
 | Optimizer states (AdamW, fp32 master + momentum + variance) | ~1.3 GB |
 | Visual encoder forward (100 frames × 196K px) | ~2-3 GB |
 | LLM activations (grad ckpt + flash-attn, ~10K seq) | ~8-10 GB |
@@ -51,8 +51,8 @@ This doc’s `100`-frame configs are **high-coverage pushes** for 24/32 GB cards
 NFRAMES=100 \
 VIDEO_MIN_PIXELS=$((96 * 32 * 32)) \
 VIDEO_MAX_PIXELS=$((192 * 32 * 32)) \
-LORA_RANK=64 \
-LORA_ALPHA=128 \
+LORA_RANK=16 \
+LORA_ALPHA=32 \
 BITS=4 \
 DISABLE_FLASH_ATTN2=0 \
 BATCH_PER_DEVICE=1 \
@@ -72,7 +72,7 @@ If you hit OOM, apply these changes **one at a time** in order:
 | Step | Change | VRAM Saved |
 |---|---|---|
 | 1st | `VIDEO_MAX_PIXELS=$((128 * 32 * 32))` → 131K | ~2 GB |
-| 2nd | `LORA_RANK=32 LORA_ALPHA=64` | ~0.7 GB |
+| 2nd | `BITS=16` (if not QLoRA) | ~2 GB |
 | 3rd | `NFRAMES=80` (last resort) | ~2 GB |
 
 ---
@@ -86,7 +86,7 @@ If you hit OOM, apply these changes **one at a time** in order:
 | Component | Est. VRAM |
 |---|---|
 | Base model (4-bit NF4) | ~2.5 GB |
-| LoRA adapters (rank 64, bf16) | ~0.2 GB |
+| LoRA adapters (rank 16, bf16) | ~0.05 GB |
 | Optimizer states (AdamW) | ~1.3 GB |
 | Visual encoder forward (100 frames × 328K px, ×2 batch) | ~5-6 GB |
 | LLM activations (grad ckpt + flash-attn, ~16K seq, ×2 batch) | ~12-14 GB |
@@ -100,8 +100,8 @@ If you hit OOM, apply these changes **one at a time** in order:
 NFRAMES=100 \
 VIDEO_MIN_PIXELS=$((128 * 32 * 32)) \
 VIDEO_MAX_PIXELS=$((320 * 32 * 32)) \
-LORA_RANK=64 \
-LORA_ALPHA=128 \
+LORA_RANK=16 \
+LORA_ALPHA=32 \
 BITS=4 \
 DISABLE_FLASH_ATTN2=0 \
 BATCH_PER_DEVICE=2 \
@@ -136,7 +136,7 @@ These are already defaults in `train_sft.sh` and do not need to be passed explic
 | `tf32` | True | Faster matmuls on Ampere+ GPUs |
 | `freeze_vision_tower` | True | Only train LoRA adapters, not full vision encoder |
 | `freeze_llm` | True | Only train LoRA adapters, not full LLM |
-| `freeze_merger` | True | Only train LoRA adapters, not the connector |
+| `freeze_merger` | **False** | Merger full-trainable (prod baseline) |
 | `max_seq_length` | 8192 (SFT) | Truncates; `60/262144` ~15.7k >8192 → use `131072` or raise to `16384` |
 | `weight_decay` | 0.1 SFT / 0.0 GRPO | |
 | `lr_scheduler` | cosine SFT / constant GRPO | |

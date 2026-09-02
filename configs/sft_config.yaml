@@ -9,11 +9,11 @@ image_folder: "dataset_sft"
 bits: 8                          # 8-bit QLoRA
 lora_enable: true
 vision_lora: true               # Include vision in LoRA
-lora_rank: 32
-lora_alpha: 64
+lora_rank: 16
+lora_alpha: 32
 lora_dropout: 0.05
-num_lora_modules: -1            # All linear layers
-lora_namespan_exclude: "['lm_head', 'embed_tokens']"
+num_lora_modules: -1            # All LLM q/k/v/o + gate/up/down + vision transformer linears
+lora_namespan_exclude: "['lm_head', 'embed_tokens', 'merger', 'pos_embed']"
 
 # Freezing
 freeze_vision_tower: true

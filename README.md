@@ -1,6 +1,6 @@
 # Qwen3-VL-2B Cataract Surgery Fine-tuning (SFT + GRPO)
 
-Fine-tune **Qwen/Qwen3-VL-2B-Instruct** with QLoRA (4-bit, `r=32 alpha=64`) on cataract surgery video data (clip-level descriptions, full-video narration, and multi-choice QA for RL).
+Fine-tune **Qwen/Qwen3-VL-2B-Instruct** with QLoRA (4-bit, `r=16 alpha=32`, merger full-trainable, `pos_embed` frozen) on cataract surgery video data (clip-level descriptions, full-video narration, and multi-choice QA for RL).
 
 Pipeline: **Base → SFT (60 frames) → Merge → GRPO (32 frames, G=5, one-update) → Merge**
 
@@ -109,8 +109,8 @@ Defaults for 48 GB single GPU; override via env vars. Scripts are source of trut
 ### LoRA
 | Var | Default | Description |
 |-----|---------|-------------|
-| `LORA_RANK` | 32 | Rank (alpha 2× rank) |
-| `LORA_ALPHA` | 64 | Alpha |
+| `LORA_RANK` | 16 | Rank (alpha 2× rank) |
+| `LORA_ALPHA` | 32 | Alpha |
 | `LORA_DROPOUT` | `0.05` SFT / `0.0` GRPO | GRPO `0.0` for deterministic old/current logprobs (`GRPO_ISSUES.md P1-1`); `GRPOArguments.lora_dropout=0.0` |
 
 ### Training
@@ -240,7 +240,7 @@ Adapters on **301** modules (excluded `embed_tokens`, `lm_head` via `lora_namesp
 | Deepstack merger | 6 | `0/1/2.{linear_fc1,linear_fc2}` |
 | Pos embed | 1 | `visual.pos_embed` |
 
-Base 4-bit frozen, only `LoRA A/B` + `merger` trainable (lr `1e-4` LLM, `2e-6` vision, `1e-5` merger). QLoRA `r=32 alpha=64`. Verify: `.venv/bin/python check_lora_weights.py output/sft_lora` (`lora_B 300/300 non-zero`).
+Base frozen, `LoRA` on LLM `q/k/v/o`+`gate/up/down` + vision transformer linears (`292` modules), `merger` full-trainable (`1e-5`), `pos_embed`/`embed_tokens`/`lm_head` frozen. QLoRA `r=16 alpha=32` (~`10-15M` params at `r8` → `~20-30M` at `r16`). Verify: `check_lora_weights.py` (`lora_B ~292/292 non-zero`).
 
 Norm kept `float32`, `lm_head`/`embed_tokens` `float32` to match (fixes `BFloat16 vs Float` at `lm_head` when `norm float32`). `prepare_model_for_kbit_training` + `autocast(bf16)` wraps GRPO `generate`/logprob forwards.
 
@@ -248,7 +248,7 @@ Norm kept `float32`, `lm_head`/`embed_tokens` `float32` to match (fixes `BFloat1
 
 ## Known Issues → Fixes (full: `ISSUES_REPORT.md` (SFT) + `GRPO_ISSUES.md` (GRPO audit P0-P3))
 
-SFT fixes: **C1** path prefix, **C3** unique IDs, **C4** `lora_bias` dict, **H2** vision `bits` branching, **H4** `SFT_COMPUTE_METRICS`, **M4** `use_dora`, frame probe (`nframes`→`total`), TRL 1.8, DeepSpeed optional, `GRPODataset`/`QwenGRPOTrainer` column whitelisting.
+Production baseline: `r16 α32` LLM `q/k/v/o`+MLP + vision transformer linears, `merger` full-trainable, `pos_embed` frozen, `lora_dropout 0.05→0.0` GRPO. SFT fixes: **C1** path prefix, **C3** unique IDs, **C4** `lora_bias` dict, **H2** `bits` branching, **H4** `SFT_COMPUTE_METRICS`, **M4** `use_dora`, frame probe, TRL 1.8, DeepSpeed optional.
 
 GRPO fixes (audit `GRPO_ISSUES.md`):
 - **P0-1** zero-std `advantage=0` (was `rewards-0.5` absolute PG) + `zero_std_group_fraction` log
@@ -267,7 +267,7 @@ Rewards: MCQ exact letter, `boundary` `exp(-|Δt|/1.5)`, `temporal` `tIoU`, `pha
 
 ---
 
-## VRAM Usage & Tokens (measured on RTX 4060 Laptop 8GB, QLoRA `r32` `bf16`)
+## VRAM Usage & Tokens (measured RTX 4060 8GB, QLoRA `r16` `bf16`; `r32` +9 modules ≈ +0.5GB)
 
 | Config | VRAM peak | Tokens/sample worst | Notes |
 |--------|-----------|---------------------|-------|

@@ -53,10 +53,10 @@ DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/data/lite}"
 mkdir -p "$OUTPUT_ROOT" "$DATA_DIR"
 export SFT_DATASET_ROOT DATA_DIR
 
-# QLoRA lite
+# QLoRA lite — r16 baseline (merger full-trainable, pos_embed frozen)
 BITS="${BITS:-4}"
-LORA_RANK="${LORA_RANK:-4}"
-LORA_ALPHA="${LORA_ALPHA:-8}"
+LORA_RANK="${LORA_RANK:-16}"
+LORA_ALPHA="${LORA_ALPHA:-32}"
 LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
 
 # Batch / opt (effective batch = 1)
@@ -180,8 +180,8 @@ COMMON_ARGS=(
     --bits "$BITS"
     --lora_enable True --vision_lora True --use_dora False
     --lora_rank "$LORA_RANK" --lora_alpha "$LORA_ALPHA" --lora_dropout "$LORA_DROPOUT"
-    --num_lora_modules -1 --lora_namespan_exclude "['lm_head','embed_tokens']"
-    --freeze_vision_tower True --freeze_llm True --freeze_merger True
+    --num_lora_modules -1 --lora_namespan_exclude "['lm_head', 'embed_tokens', 'merger', 'pos_embed']"
+    --freeze_vision_tower True --freeze_llm True --freeze_merger False
     --bf16 True --fp16 False --tf32 True --disable_flash_attn2 True --use_liger_kernel True
     --num_train_epochs "$NUM_EPOCHS" --max_steps "$MAX_STEPS"
     --per_device_train_batch_size "$BATCH_PER_DEVICE" --gradient_accumulation_steps "$GRAD_ACCUM"

@@ -58,8 +58,8 @@ class TrainingArguments(HFTrainingArguments):
     lora_enable: bool = False
     vision_lora: bool = False
     use_dora: bool = False
-    lora_rank: int = 64
-    lora_alpha: int = 16
+    lora_rank: int = 16
+    lora_alpha: int = 32
     lora_dropout: float = 0.05
     lora_weight_path: str = ""
     lora_bias: str = "none"
@@ -106,8 +106,8 @@ class GRPOArguments(TrainingArguments):
     lora_enable: bool = False
     vision_lora: bool = False
     use_dora: bool = False
-    lora_rank: int = 64
-    lora_alpha: int = 16
+    lora_rank: int = 16
+    lora_alpha: int = 32
     lora_dropout: float = 0.0  # 0.0 for GRPO (deterministic old/current logprobs; see GRPO_ISSUES.md P1-1)
     lora_weight_path: str = ""
     lora_bias: str = "none"

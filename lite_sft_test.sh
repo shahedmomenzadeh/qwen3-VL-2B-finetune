@@ -142,14 +142,14 @@ set +e
         --lora_enable True \
         --vision_lora True \
         --use_dora False \
-        --lora_rank 8 \
-        --lora_alpha 16 \
-        --lora_dropout 0.0 \
+        --lora_rank 16 \
+        --lora_alpha 32 \
+        --lora_dropout 0.05 \
         --num_lora_modules -1 \
-        --lora_namespan_exclude "['lm_head', 'embed_tokens']" \
+        --lora_namespan_exclude "['lm_head', 'embed_tokens', 'merger', 'pos_embed']" \
         --freeze_vision_tower True \
         --freeze_llm True \
-        --freeze_merger True \
+        --freeze_merger False \
         --bf16 True \
         --fp16 False \
         --tf32 True \
