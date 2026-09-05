@@ -74,41 +74,16 @@ if [ ! -f "$VENV_PYTHON" ]; then
 fi
 log "Python: $($VENV_PYTHON --version)"
 
-# Fast path for repeat runs: if the venv already imports the full stack, skip
-# the slow reinstall below. Set FORCE_REINSTALL=1 to force a fresh install.
-if [ "${FORCE_REINSTALL:-0}" != "1" ] && "$VENV_PYTHON" -c "import torch, transformers, peft, trl, liger_kernel, bitsandbytes, qwen_vl_utils" 2>/dev/null; then
-    log "Venv already ready — skipping package installs (FORCE_REINSTALL=1 to reinstall)."
+# Deterministic env via uv.lock (fast no-op when already in sync, so repeat
+# runs start immediately). uv.lock pins torch/cu130 + transformers@git-main.
+# Set FORCE_REINSTALL=1 to reinstall every locked package from scratch.
+if [ "${FORCE_REINSTALL:-0}" = "1" ]; then
+    log "FORCE_REINSTALL=1 — reinstalling locked environment..."
+    uv sync --reinstall
 else
-# Install PyTorch (CUDA 13.0)
-log "Installing PyTorch..."
-uv pip install --python "$VENV_PYTHON" torch torchvision \
-    --index-url https://download.pytorch.org/whl/cu130
-
-# Install transformers from GitHub main (latest Qwen3-VL support)
-log "Installing transformers from GitHub main..."
-uv pip install --python "$VENV_PYTHON" \
-    "git+https://github.com/huggingface/transformers.git"
-
-# Install remaining dependencies
-log "Installing remaining dependencies..."
-uv pip install --python "$VENV_PYTHON" \
-    --extra-index-url https://pypi.org/simple \
-    "accelerate" \
-    "bitsandbytes>=0.43.0" \
-    "qwen-vl-utils[decord]" \
-    "peft>=0.13.0" \
-    "trl>=1.8.0" \
-    "liger-kernel>=0.8.0" \
-    "ujson" \
-    "tensorboard" \
-    "einops" \
-    "sentencepiece" \
-    "protobuf" \
-    "pillow" \
-    "tqdm" \
-    "datasets" \
-    "imageio" \
-    "gdown"
+    log "Syncing environment (uv.lock)..."
+    uv sync
+fi
 
 # Optional: flash-attn for faster attention (skip if build fails)
 INSTALL_FLASH_ATTN="${INSTALL_FLASH_ATTN:-1}"
@@ -119,7 +94,6 @@ if [ "$INSTALL_FLASH_ATTN" = "1" ]; then
         warn "To use flash attention, install manually: uv pip install flash-attn --no-build-isolation"
     }
 fi
-fi  # end: skip-installs fast path for repeat runs
 
 # Verify core imports
 log "Verifying installation..."
