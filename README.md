@@ -65,7 +65,6 @@ qwen3-VL-2B-finetune/
 ├── lite_sft_test.sh          # SFT smoke (5 samples, 32 frames) → output/lite_sft_test/merged
 ├── lite_grpo_test.sh         # GRPO probe (30/7, G=4, nframes=8, max_completion=1024, dropout 0.0)
 ├── lite_e2e_benchmark.sh     # Instrumented lite E2E: VRAM sweep + SFT 6 steps → Merge → GRPO 4 steps G=5 → report.md
-├── archive/                  # Retired scripts (test_sft_run.sh, sft_lite_train.sh) — see archive/README.md
 ├── setup.sh                  # Manual env setup
 ├── GRPO_ISSUES.md            # GRPO audit (P0-P3) + fix status
 ├── ISSUES_REPORT.md          # Historical SFT issues
@@ -290,7 +289,7 @@ Token est for `60` SFT / `32` GRPO: SFT `7663*7.6k≈58M`/ep, GRPO `4252*5*4.6k�
 bash lite_sft_test.sh   # 5 samples SFT 32 frames → output/lite_sft_test/merged (auto-merge), ~2GB
 GRPO_TRAIN_SAMPLES=30 bash lite_grpo_test.sh  # 30/7 GRPO G=4 nframes=8 max_completion=1024 (~9min, 7.9GB peak)
 bash lite_e2e_benchmark.sh  # full lite E2E + VRAM sweep → output/lite_benchmark/report.md (GPU-hours est)
-# retired: archive/test_sft_run.sh (legacy 1-video smoke) — use lite_sft_test.sh instead
+bash lite_sft_test.sh       # 1-video SFT smoke when running stages individually
 HF_HOME=hf_cache .venv/bin/python scripts/verify_qwen_logit_alignment.py --bits 4  # P0-2 check
 ```
 
