@@ -16,6 +16,9 @@
 # Repeat runs reuse the existing .venv (installs are skipped once imports
 # verify). Set FORCE_REINSTALL=1 to force a full package reinstall.
 #
+# Set SETUP_ONLY=1 to stop after env + dataset + data prep (validates a
+# fresh-machine bootstrap without launching training).
+#
 # Also set HF_TOKEN if you need to download the model from HuggingFace:
 #   export HF_TOKEN=hf_xxxxx
 #
@@ -271,6 +274,11 @@ VAL_DATA="$DATA_PREFIX/sft_val_dataset_sft.json"
 
 log "  Train data: $TRAIN_DATA"
 log "  Val data:   $VAL_DATA"
+
+if [ "${SETUP_ONLY:-0}" = "1" ]; then
+    log "SETUP_ONLY=1 — bootstrap (env + dataset + data prep) complete, stopping before training."
+    exit 0
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # 6. COMMON TRAINING ARGS
