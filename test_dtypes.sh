@@ -202,7 +202,8 @@ run_one() {
         *) err "unknown dtype '$dtype' (want bf16|fp16|fp32)" ;;
     esac
     local out="$OUT_ROOT/${dtype}_${stage}"
-    local tlog="$OUT_ROOT/${dtype}_${stage}.log"
+    local rundir="$out/run"
+    local tlog="$rundir/train.log"
     rm -rf "$out"; mkdir -p "$out"
     rm -f "$tlog"
 
@@ -210,6 +211,7 @@ run_one() {
 
     set +e
     if [ "$stage" = "sft" ]; then
+        GPU_POLL_SEC=2 bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$rundir" "$dtype/$stage" \
         $VENV_PYTHON -u src/train/train_sft.py \
             --model_id "$MODEL_ID" \
             --data_path "$SFT_TRAIN" \
@@ -234,9 +236,9 @@ run_one() {
             --gradient_checkpointing True --lazy_preprocess True \
             --remove_unused_columns False --dataloader_num_workers 0 \
             --logging_steps 1 --eval_strategy no --save_strategy no \
-            --report_to none \
-            > "$tlog" 2>&1
+            --report_to none
     else
+        GPU_POLL_SEC=2 bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$rundir" "$dtype/$stage" \
         $VENV_PYTHON -u src/train/train_grpo.py \
             --model_id "$MODEL_ID" \
             --data_path "$GRPO_TRAIN" \
@@ -263,8 +265,7 @@ run_one() {
             --gradient_checkpointing True --lazy_preprocess True \
             --remove_unused_columns False --dataloader_num_workers 0 \
             --logging_steps 1 --eval_strategy no --save_strategy no \
-            --report_to none \
-            > "$tlog" 2>&1
+            --report_to none
     fi
     local rc=$?
     set -e
@@ -300,6 +301,6 @@ log "Results ($PASS passed, $FAIL failed):"
 column -t "$SUMMARY" || cat "$SUMMARY"
 
 if [ "$FAIL" -ne 0 ]; then
-    err "$FAIL run(s) failed — see $OUT_ROOT/<dtype>_<stage>.log"
+    err "$FAIL run(s) failed — see $OUT_ROOT/<dtype>_<stage>/run/train.log"
 fi
 log "All dtype runs passed (adapters only, no full checkpoints)."

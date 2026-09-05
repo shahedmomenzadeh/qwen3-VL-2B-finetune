@@ -108,9 +108,30 @@ else
 fi
 
 GRPO_OUT="$OUTPUT_ROOT/grpo_lora"
+GRPO_LOG_DIR="$OUTPUT_ROOT/logs/grpo"
 log "=== Launching GRPO Training ==="
 
-$VENV_PYTHON src/train/train_grpo.py \
+# Auto-fallback to SDPA when flash_attn isn't installed (mirrors train_sft.sh)
+if ! "$VENV_PYTHON" -c "import flash_attn" 2>/dev/null; then
+    if [ "${DISABLE_FLASH_ATTN2:-0}" != "1" ]; then
+        warn "flash_attn not importable — forcing SDPA (DISABLE_FLASH_ATTN2=1)."
+        DISABLE_FLASH_ATTN2=1
+    fi
+fi
+
+mkdir -p "$GRPO_LOG_DIR"
+{
+    echo "model=$MODEL_ID"
+    echo "train_data=$TRAIN_JSON val_data=$VAL_JSON"
+    echo "bits=$BITS lora_r=$LORA_RANK lora_alpha=$LORA_ALPHA dropout=$LORA_DROPOUT"
+    echo "batch_per_device=$BATCH_PER_DEVICE grad_accum=$GRAD_ACCUM ngen=$NUM_GENERATIONS max_comp=$MAX_COMP epochs=$NUM_EPOCHS"
+    echo "lr=$LR vision_lr=$VISION_LR merger_lr=$MERGER_LR beta=$BETA temp=$TEMPERATURE top_p=$TOP_P"
+    echo "nframes=$NFRAMES fps=${FPS:-unset} px_min=$VIDEO_MIN_PIXELS px_max=$VIDEO_MAX_PIXELS"
+    echo "disable_flash_attn2=$DISABLE_FLASH_ATTN2 report_to=$REPORT_TO"
+} > "$GRPO_LOG_DIR/config.txt" 2>&1 || true
+
+bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$GRPO_LOG_DIR" "grpo" \
+    $VENV_PYTHON -u src/train/train_grpo.py \
     --model_id "$MODEL_ID" \
     --data_path "$TRAIN_JSON" \
     --eval_path "$VAL_JSON" \
@@ -159,7 +180,8 @@ $VENV_PYTHON src/train/train_grpo.py \
     --save_strategy steps \
     --save_steps 300 \
     --save_total_limit 3 \
-    --report_to "$REPORT_TO"
+    --report_to "$REPORT_TO" \
+    || err "GRPO failed — see $GRPO_LOG_DIR/train.log + summary.txt"
 
 log "GRPO training complete: $GRPO_OUT"
 
@@ -171,6 +193,6 @@ $VENV_PYTHON src/merge_lora.py \
     --model-path "$GRPO_OUT" \
     --model-base "$MODEL_ID" \
     --save-model-path "$GRPO_MERGED" \
-    --safe-serialization
+    --safe-serialization 2>&1 | tee "$GRPO_LOG_DIR/merge.log"
 
 log "=== Final GRPO Model Ready at $GRPO_MERGED ==="

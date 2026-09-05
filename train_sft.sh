@@ -347,17 +347,39 @@ COMMON_ARGS=(
 log "=== 5. SFT (clips + full videos) ==="
 
 SFT_OUT="$OUTPUT_ROOT/sft_lora"
+SFT_LOG_DIR="$OUTPUT_ROOT/logs/sft"
 
 if [ -f "$SFT_OUT/adapter_config.json" ]; then
     log "  sft_lora already exists, skipping SFT."
     log "  (Delete $SFT_OUT to retrain.)"
 else
-    $VENV_PYTHON -u src/train/train_sft.py \
+    mkdir -p "$SFT_LOG_DIR"
+    # Effective run config (explicit vars only — never secrets like HF_TOKEN)
+    {
+        echo "model=$MODEL_ID"
+        echo "train_data=$TRAIN_DATA val_data=$VAL_DATA"
+        echo "bits=$BITS lora_r=$LORA_RANK lora_alpha=$LORA_ALPHA dropout=$LORA_DROPOUT"
+        echo "batch_per_device=$BATCH_PER_DEVICE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH_SIZE"
+        echo "lr=$LR vision_lr=$VISION_LR merger_lr=$MERGER_LR wd=$WEIGHT_DECAY warmup=$WARMUP_STEPS sched=$LR_SCHEDULER epochs=$NUM_EPOCHS"
+        echo "nframes=$NFRAMES fps=${FPS:-unset} px_min=$VIDEO_MIN_PIXELS px_max=$VIDEO_MAX_PIXELS"
+        echo "disable_flash_attn2=$DISABLE_FLASH_ATTN2 report_to=$REPORT_TO subset=$SUBSET_RATIO"
+        $VENV_PYTHON -c "
+import json
+for p in ('$TRAIN_DATA', '$VAL_DATA'):
+    try:
+        print(f'{p}: {len(json.load(open(p)))} samples')
+    except Exception as e:
+        print(f'{p}: unreadable ({e})')
+"
+    } > "$SFT_LOG_DIR/config.txt" 2>&1 || true
+    bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$SFT_LOG_DIR" "sft" \
+        $VENV_PYTHON -u src/train/train_sft.py \
         --model_id "$MODEL_ID" \
         --data_path "$TRAIN_DATA" \
         --eval_path "$VAL_DATA" \
         --output_dir "$SFT_OUT" \
-        "${COMMON_ARGS[@]}"
+        "${COMMON_ARGS[@]}" \
+        || err "SFT failed — see $SFT_LOG_DIR/train.log + summary.txt"
 fi
 log "SFT complete."
 
@@ -371,11 +393,12 @@ SFT_MERGED="$OUTPUT_ROOT/sft_merged"
 if [ -f "$SFT_MERGED/config.json" ]; then
     log "  sft_merged already exists, skipping merge."
 else
+    mkdir -p "$SFT_LOG_DIR"
     $VENV_PYTHON src/merge_lora.py \
         --model-path "$SFT_OUT" \
         --model-base "$MODEL_ID" \
         --save-model-path "$SFT_MERGED" \
-        --safe-serialization
+        --safe-serialization 2>&1 | tee "$SFT_LOG_DIR/merge.log"
 fi
 log "SFT LoRA merged to $SFT_MERGED"
 

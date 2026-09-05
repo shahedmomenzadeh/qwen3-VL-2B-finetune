@@ -54,6 +54,8 @@ SKIP_SWEEP=1 NFRAMES_SFT=32 NFRAMES_GRPO=16 bash lite_e2e_benchmark.sh
 
 `train_sft.sh` stops at 6, `train.sh` runs 1-8. Lite `lite_e2e_benchmark.sh` mirrors 5-8 with sweep + `bench_sft/bench_grpo` logs. No full-video GRPO task.
 
+Every training run is instrumented via `scripts/run_instrumented.sh` into `output/logs/<sft|grpo>/` (console still streams live): `train.log` (full output), `gpu.csv` (`nvidia-smi` util/mem/temp/power `@5s`), `losses.csv` + `eval_losses.csv` (parsed Trainer loss lines), `config.txt` + `cmd.txt` (exact effective config), `merge.log`, `summary.txt` (wall time, loss first/last/best, GPU peak/avg), `start_time`/`end_time`/`exit_code`.
+
 ---
 
 ## Project Structure

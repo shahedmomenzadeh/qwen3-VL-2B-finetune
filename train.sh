@@ -97,10 +97,29 @@ fi
 SFT_BASE="$MODEL_NAME"
 SFT_OUT="${OUTPUT_ROOT}/sft_lora"
 SFT_MERGED="${OUTPUT_ROOT}/sft_merged"
+SFT_LOG_DIR="${OUTPUT_ROOT}/logs/sft"
+GRPO_LOG_DIR="${OUTPUT_ROOT}/logs/grpo"
+
+# Auto-fallback to SDPA when flash_attn isn't installed (mirrors train_sft.sh)
+if ! "$VENV_PYTHON" -c "import flash_attn" 2>/dev/null; then
+    if [ "${DISABLE_FLASH_ATTN2:-0}" != "1" ]; then
+        warn "flash_attn not importable — forcing SDPA (DISABLE_FLASH_ATTN2=1)."
+        DISABLE_FLASH_ATTN2=1
+    fi
+fi
 
 if [ ! -f "${SFT_OUT}/adapter_config.json" ]; then
     log "=== Stage 1: SFT Training ==="
-    $VENV_PYTHON src/train/train_sft.py \
+    mkdir -p "$SFT_LOG_DIR"
+    {
+        echo "model=$SFT_BASE"
+        echo "train_data=$DATA_PREFIX/sft_train_dataset_sft.json val_data=$DATA_PREFIX/sft_val_dataset_sft.json"
+        echo "bits=$BITS lora_r=$LORA_RANK lora_alpha=$LORA_ALPHA"
+        echo "batch_per_device=$BATCH_PER_DEVICE grad_accum=$GRAD_ACCUM nframes=$NFRAMES fps=${FPS:-unset}"
+        echo "disable_flash_attn2=${DISABLE_FLASH_ATTN2:-0} report_to=$REPORT_TO"
+    } > "$SFT_LOG_DIR/config.txt" 2>&1 || true
+    bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$SFT_LOG_DIR" "sft" \
+    $VENV_PYTHON -u src/train/train_sft.py \
         --model_id "$SFT_BASE" \
         --data_path "$DATA_PREFIX/sft_train_dataset_sft.json" \
         --eval_path "$DATA_PREFIX/sft_val_dataset_sft.json" \
@@ -119,7 +138,7 @@ if [ ! -f "${SFT_OUT}/adapter_config.json" ]; then
         --freeze_llm True \
         --freeze_merger False \
         --bf16 True --fp16 False --tf32 True \
-        --disable_flash_attn2 False \
+        --disable_flash_attn2 $([ "${DISABLE_FLASH_ATTN2:-0}" = "1" ] && echo True || echo False) \
         --use_liger_kernel True \
         --num_train_epochs "$EPOCHS_SFT" \
         --per_device_train_batch_size "$BATCH_PER_DEVICE" \
@@ -147,7 +166,8 @@ if [ ! -f "${SFT_OUT}/adapter_config.json" ]; then
         --per_device_eval_batch_size 1 \
         --generation_max_new_tokens 256 \
         --prediction_loss_only False \
-        --report_to "$REPORT_TO"
+        --report_to "$REPORT_TO" \
+        || err "SFT failed — see $SFT_LOG_DIR/train.log + summary.txt"
 else
     log "SFT checkpoint already exists at $SFT_OUT, skipping SFT."
 fi
@@ -155,11 +175,12 @@ fi
 # ── 5. Merge SFT Model ────────────────────────────────────────────────────────
 if [ ! -f "${SFT_MERGED}/config.json" ]; then
     log "=== Merging SFT Adapter ==="
+    mkdir -p "$SFT_LOG_DIR"
     $VENV_PYTHON src/merge_lora.py \
         --model-path "$SFT_OUT" \
         --model-base "$SFT_BASE" \
         --save-model-path "$SFT_MERGED" \
-        --safe-serialization
+        --safe-serialization 2>&1 | tee "$SFT_LOG_DIR/merge.log"
 else
     log "Merged SFT already exists at $SFT_MERGED, skipping merge."
 fi
@@ -171,7 +192,16 @@ GRPO_MERGED="${OUTPUT_ROOT}/grpo_merged"
 
 if [ ! -f "${GRPO_OUT}/adapter_config.json" ]; then
     log "=== Stage 2: GRPO Training ==="
-    $VENV_PYTHON src/train/train_grpo.py \
+    mkdir -p "$GRPO_LOG_DIR"
+    {
+        echo "model=$GRPO_BASE"
+        echo "train_data=$DATA_PREFIX/grpo_train_dataset_grpo.json val_data=$DATA_PREFIX/grpo_val_dataset_grpo.json"
+        echo "bits=$BITS lora_r=$LORA_RANK lora_alpha=$LORA_ALPHA"
+        echo "batch_per_device=$BATCH_PER_DEVICE grad_accum=$GRAD_ACCUM ngen=$NUM_GENERATIONS max_comp=$MAX_COMPLETION_LENGTH"
+        echo "disable_flash_attn2=${DISABLE_FLASH_ATTN2:-0} report_to=$REPORT_TO"
+    } > "$GRPO_LOG_DIR/config.txt" 2>&1 || true
+    bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$GRPO_LOG_DIR" "grpo" \
+    $VENV_PYTHON -u src/train/train_grpo.py \
         --model_id "$GRPO_BASE" \
         --data_path "$DATA_PREFIX/grpo_train_dataset_grpo.json" \
         --eval_path "$DATA_PREFIX/grpo_val_dataset_grpo.json" \
@@ -190,7 +220,7 @@ if [ ! -f "${GRPO_OUT}/adapter_config.json" ]; then
         --freeze_llm True \
         --freeze_merger False \
         --bf16 True --fp16 False --tf32 True \
-        --disable_flash_attn2 False \
+        --disable_flash_attn2 $([ "${DISABLE_FLASH_ATTN2:-0}" = "1" ] && echo True || echo False) \
         --use_liger_kernel True \
         --num_train_epochs "$EPOCHS_GRPO" \
         --num_generations "$NUM_GENERATIONS" \
@@ -220,7 +250,8 @@ if [ ! -f "${GRPO_OUT}/adapter_config.json" ]; then
         --save_strategy steps \
         --save_steps 300 \
         --save_total_limit 3 \
-        --report_to "$REPORT_TO"
+        --report_to "$REPORT_TO" \
+        || err "GRPO failed — see $GRPO_LOG_DIR/train.log + summary.txt"
 else
     log "GRPO checkpoint already exists at $GRPO_OUT, skipping GRPO."
 fi
@@ -228,11 +259,12 @@ fi
 # ── 7. Final Merge GRPO Model ──────────────────────────────────────────────────
 if [ ! -f "${GRPO_MERGED}/config.json" ]; then
     log "=== Final Merge: GRPO Adapter ==="
+    mkdir -p "$GRPO_LOG_DIR"
     $VENV_PYTHON src/merge_lora.py \
         --model-path "$GRPO_OUT" \
         --model-base "$GRPO_BASE" \
         --save-model-path "$GRPO_MERGED" \
-        --safe-serialization
+        --safe-serialization 2>&1 | tee "$GRPO_LOG_DIR/merge.log"
 fi
 
 log "======================================================"
