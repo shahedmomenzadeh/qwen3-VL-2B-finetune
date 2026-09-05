@@ -49,6 +49,9 @@ if [ -f "$HF_HOME/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85
     export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 fi
 
+# Auto-restore SFT data from HF Hub on a fresh machine (no-op when present)
+VENV_PYTHON="${VENV_PYTHON:-.venv/bin/python}" bash "$SCRIPT_DIR/scripts/ensure_dataset_sft.sh"
+
 # ── 0. Ensure balanced lite subsets exist ────────────────────────────────────
 if [ ! -f "data/lite_e2e/sft_train.json" ] || [ ! -f "data/lite_e2e/grpo_train.json" ]; then
     log "Building balanced lite subsets (all task groups)..."

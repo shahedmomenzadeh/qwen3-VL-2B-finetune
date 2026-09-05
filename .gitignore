@@ -18,8 +18,12 @@ output/
 data/*.json
 data/tiny_test/
 
-# Dataset: exclude media & raw annotations (distributed separately)
-dataset_sft
+# Dataset: exclude media & raw annotations (distributed separately via HF Hub).
+# Helper scripts + small metadata stay tracked so a fresh clone can bootstrap.
+dataset_sft/*
+!dataset_sft/*.py
+!dataset_sft/*.sh
+!dataset_sft/*.json
 dataset_grpo
 
 

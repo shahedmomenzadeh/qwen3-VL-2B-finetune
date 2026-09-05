@@ -33,8 +33,11 @@ NFRAMES="${NFRAMES:-32}"
 MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-8192}"
 BITS="${BITS:-4}"
 
+# Auto-restore from HF Hub on a fresh machine (no-op when present)
+SFT_DATASET_ROOT="$SFT_DATASET_ROOT" VENV_PYTHON="${VENV_PYTHON:-.venv/bin/python}" bash "$SCRIPT_DIR/scripts/ensure_dataset_sft.sh"
+
 for split in Train Validation; do
-    [ -d "$SFT_DATASET_ROOT/$split" ] || err "$SFT_DATASET_ROOT/$split is missing"
+    [ -d "$SFT_DATASET_ROOT/$split" ] || err "$SFT_DATASET_ROOT/$split is missing (auto-restore failed?)"
 done
 
 mkdir -p "$BENCH_DIR"

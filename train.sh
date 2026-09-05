@@ -36,6 +36,9 @@ GRPO_DATASET_ROOT="${GRPO_DATASET_ROOT:-dataset_grpo}"
 DATA_PREFIX="${DATA_PREFIX:-data}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/output}"
 
+# Auto-restore SFT data from HF Hub on a fresh machine (no-op when present)
+SFT_DATASET_ROOT="$SFT_DATASET_ROOT" bash "$SCRIPT_DIR/scripts/ensure_dataset_sft.sh"
+
 BITS="${BITS:-4}"
 LORA_RANK="${LORA_RANK:-16}"
 LORA_ALPHA="${LORA_ALPHA:-32}"

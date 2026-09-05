@@ -134,6 +134,9 @@ log "=== 2. Dataset Setup ==="
 
 SFT_DATASET_ROOT="${SFT_DATASET_ROOT:-dataset_sft}"
 
+# Auto-restore from HF Hub on a fresh machine (no-op when present)
+SFT_DATASET_ROOT="$SFT_DATASET_ROOT" bash "$SCRIPT_DIR/scripts/ensure_dataset_sft.sh"
+
 for split in Train Validation; do
     if [ ! -d "$SFT_DATASET_ROOT/$split" ] || [ -z "$(ls -A "$SFT_DATASET_ROOT/$split" 2>/dev/null)" ]; then
         err "$SFT_DATASET_ROOT/$split/ is empty or missing. Populate the separated SFT dataset first."
