@@ -258,7 +258,7 @@ random.shuffle(data)
 subset = data[:n]
 
 # Save subset to a separate file so the original is preserved
-    out = path.replace('.json', f'_sub{int(ratio*100)}.json')
+out = path.replace('.json', f'_sub{int(ratio*100)}.json')
 with open(out, 'w') as f:
     json.dump(subset, f, ensure_ascii=False, indent=2)
 print(f'  sft_train_dataset_sft.json: {len(data)} -> {len(subset)} samples -> {out}')
