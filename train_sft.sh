@@ -98,6 +98,15 @@ if [ "$INSTALL_FLASH_ATTN" = "1" ]; then
     }
 fi
 
+# Auto-fallback: if flash_attn isn't importable (install skipped or build
+# failed), force SDPA so the model loader doesn't request flash_attention_2.
+if ! "$VENV_PYTHON" -c "import flash_attn" 2>/dev/null; then
+    if [ "${DISABLE_FLASH_ATTN2:-0}" != "1" ]; then
+        warn "flash_attn not importable — forcing SDPA (DISABLE_FLASH_ATTN2=1)."
+        DISABLE_FLASH_ATTN2=1
+    fi
+fi
+
 # Verify core imports
 log "Verifying installation..."
 $VENV_PYTHON -c "
