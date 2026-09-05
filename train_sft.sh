@@ -13,6 +13,9 @@
 #   SUBSET_RATIO=0.3 bash train_sft.sh         # 30% of training data (test run)
 #   BITS=16 NFRAMES=48 bash train_sft.sh       # 16-bit LoRA (no quantization)
 #
+# Repeat runs reuse the existing .venv (installs are skipped once imports
+# verify). Set FORCE_REINSTALL=1 to force a full package reinstall.
+#
 # Also set HF_TOKEN if you need to download the model from HuggingFace:
 #   export HF_TOKEN=hf_xxxxx
 #
@@ -71,6 +74,11 @@ if [ ! -f "$VENV_PYTHON" ]; then
 fi
 log "Python: $($VENV_PYTHON --version)"
 
+# Fast path for repeat runs: if the venv already imports the full stack, skip
+# the slow reinstall below. Set FORCE_REINSTALL=1 to force a fresh install.
+if [ "${FORCE_REINSTALL:-0}" != "1" ] && "$VENV_PYTHON" -c "import torch, transformers, peft, trl, liger_kernel, bitsandbytes, qwen_vl_utils" 2>/dev/null; then
+    log "Venv already ready — skipping package installs (FORCE_REINSTALL=1 to reinstall)."
+else
 # Install PyTorch (CUDA 13.0)
 log "Installing PyTorch..."
 uv pip install --python "$VENV_PYTHON" torch torchvision \
@@ -111,6 +119,7 @@ if [ "$INSTALL_FLASH_ATTN" = "1" ]; then
         warn "To use flash attention, install manually: uv pip install flash-attn --no-build-isolation"
     }
 fi
+fi  # end: skip-installs fast path for repeat runs
 
 # Verify core imports
 log "Verifying installation..."
