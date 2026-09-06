@@ -94,17 +94,20 @@ out.append(f"[{label}] wall time: {int(h)}h {int(m)}m {s:.1f}s ({elapsed:.1f} s)
 
 # --- losses: HF Trainer dict lines, e.g. {'loss': 2.27, 'grad_norm': 1.5, 'learning_rate': 1e-4, 'epoch': 0.05}
 num = r"(-?\d[\d.eE+-]*)"
+# Trainer values are sometimes quoted strings ('loss': '1.861'), sometimes raw
+# numbers ('loss': 1.861) — accept both.
+val = rf"['\"]?\s*{num}\s*['\"]?"
 train_rows, eval_rows = [], []
 log_text = (run / "train.log").read_text(errors="replace").splitlines()
 for line in log_text:
-    mt = re.search(rf"['\"]loss['\"]\s*:\s*{num}", line)
+    mt = re.search(rf"['\"]loss['\"]\s*:\s*{val}", line)
     if mt:
         def grab(key):
-            mm = re.search(rf"['\"]{key}['\"]\s*:\s*{num}", line)
+            mm = re.search(rf"['\"]{key}['\"]\s*:\s*{val}", line)
             return mm.group(1) if mm else ""
         train_rows.append((mt.group(1), grab("grad_norm"), grab("learning_rate"), grab("epoch")))
         continue
-    me = re.search(rf"['\"]eval_loss['\"]\s*:\s*{num}", line)
+    me = re.search(rf"['\"]eval_loss['\"]\s*:\s*{val}", line)
     if me:
         mg = re.search(rf"['\"]epoch['\"]\s*:\s*{num}", line)
         eval_rows.append((me.group(1), mg.group(1) if mg else ""))
