@@ -133,8 +133,9 @@ HF_TOKEN="${HF_TOKEN:-}"
 [ -n "$HF_TOKEN" ] && export HF_TOKEN
 export PYTHONPATH="src:${PYTHONPATH:-}"
 
-# Enable generation-based eval metrics (set ENABLE_GEN_EVAL=0 to disable)
-ENABLE_GEN_EVAL="${ENABLE_GEN_EVAL:-1}"
+# Enable generation-based eval metrics (set ENABLE_GEN_EVAL=1 to enable;
+# default off — eval_strategy is 'no', evaluation happens externally)
+ENABLE_GEN_EVAL="${ENABLE_GEN_EVAL:-0}"
 if [ "$ENABLE_GEN_EVAL" = "1" ]; then
     export SFT_COMPUTE_METRICS="eval/compute_metrics.py"
 fi
@@ -195,12 +196,12 @@ VIDEO_MAX_PIXELS="${VIDEO_MAX_PIXELS:-$((192 * 32 * 32))}"  # 196608
 # Attention
 DISABLE_FLASH_ATTN2="${DISABLE_FLASH_ATTN2:-0}"
 
-# Eval / save
-EVAL_STRATEGY="${EVAL_STRATEGY:-steps}"
+# Eval / save (checkpoints are adapter-only; eval off by default — external eval framework)
+EVAL_STRATEGY="${EVAL_STRATEGY:-no}"
 EVAL_STEPS="${EVAL_STEPS:-300}"
 PER_DEVICE_EVAL_BATCH_SIZE="${PER_DEVICE_EVAL_BATCH_SIZE:-1}"
 SAVE_STRATEGY="${SAVE_STRATEGY:-steps}"
-SAVE_STEPS="${SAVE_STEPS:-300}"
+SAVE_STEPS="${SAVE_STEPS:-100}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
 LOGGING_STEPS="${LOGGING_STEPS:-1}"
 REPORT_TO="${REPORT_TO:-tensorboard}"
