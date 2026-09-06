@@ -192,11 +192,17 @@ def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, nfram
     if fps is not None:
         content["fps"] = fps
     elif nframes is not None:
+        # qwen_vl_utils.smart_nframes applies round_by_factor(nframes, FRAME_FACTOR=2)
+        # on the "nframes" branch, so an odd value overshoots: e.g. a 75-frame
+        # video with request 100 -> clamp 75 -> round 76 > 75 -> ValueError
+        # (whose decord->torchvision fallback is itself broken on torchvision>=0.26,
+        # where io.read_video was removed). Floor to an even number here so
+        # upstream's rounding is a no-op.
         total = probe_total_frames(video_path)
         if total is not None:
-            content["nframes"] = max(2, min(nframes, total))
+            content["nframes"] = max(2, min(nframes, total) // 2 * 2)
         else:
-            content["nframes"] = max(2, nframes)
+            content["nframes"] = max(2, nframes // 2 * 2)
     else:
         # Default fallback
         content["fps"] = 1.0
