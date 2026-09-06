@@ -28,6 +28,8 @@ fi
 export PYTHONPATH="src:${PYTHONPATH:-}"
 export HF_HOME="${HF_HOME:-$SCRIPT_DIR/hf_cache}"
 export TOKENIZERS_PARALLELISM=false
+# Single-threaded OpenMP per dataloader worker (avoid oversubscription).
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 
 # ── 2. Config ─────────────────────────────────────────────────────────────────
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-VL-2B-Instruct}"
@@ -46,6 +48,18 @@ LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
 
 BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-2}"
 GRAD_ACCUM="${GRAD_ACCUM:-4}"
+
+# Data loading: auto-size workers to CPUs (leave 2 for main/system), clamp
+# to [2, 16] — 64-frame decodes are ~150MB+ in flight per sample, so more
+# workers risk RAM exhaustion before adding speed. Override any of these.
+if [ -z "${DATALOADER_WORKERS:-}" ]; then
+    _NPROC=$(nproc 2>/dev/null || echo 8)
+    DATALOADER_WORKERS=$((_NPROC - 2))
+    [ "$DATALOADER_WORKERS" -lt 2 ] && DATALOADER_WORKERS=2
+    [ "$DATALOADER_WORKERS" -gt 16 ] && DATALOADER_WORKERS=16
+fi
+DATALOADER_PREFETCH="${DATALOADER_PREFETCH:-2}"
+DATALOADER_PERSISTENT="${DATALOADER_PERSISTENT:-True}"
 NUM_GENERATIONS="${NUM_GENERATIONS:-4}"
 MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-256}"
 
@@ -70,6 +84,7 @@ log "Configuration:"
 log "  MODEL_NAME=$MODEL_NAME"
 log "  BITS=$BITS BATCH=$BATCH_PER_DEVICE GRAD_ACCUM=$GRAD_ACCUM NFRAMES=$NFRAMES"
 log "  SFT_LR=$LR GRPO_LR=$GRPO_LR VISION_LR=$VISION_LR MERGER_LR=$MERGER_LR"
+log "  WORKERS=$DATALOADER_WORKERS PREFETCH=$DATALOADER_PREFETCH PERSISTENT=$DATALOADER_PERSISTENT"
 
 # ── 3. Data Prep ──────────────────────────────────────────────────────────────
 mkdir -p "$DATA_PREFIX" "$OUTPUT_ROOT"
@@ -156,7 +171,9 @@ if [ ! -f "${SFT_OUT}/adapter_config.json" ]; then
         --gradient_checkpointing True \
         --lazy_preprocess True \
         --remove_unused_columns False \
-        --dataloader_num_workers 4 \
+        --dataloader_num_workers "$DATALOADER_WORKERS" \
+        --dataloader_prefetch_factor "$DATALOADER_PREFETCH" \
+        --dataloader_persistent_workers "$DATALOADER_PERSISTENT" \
         --logging_steps 1 \
         --save_strategy steps \
         --save_steps 300 \
@@ -242,7 +259,9 @@ if [ ! -f "${GRPO_OUT}/adapter_config.json" ]; then
         --gradient_checkpointing True \
         --lazy_preprocess True \
         --remove_unused_columns False \
-        --dataloader_num_workers 4 \
+        --dataloader_num_workers "$DATALOADER_WORKERS" \
+        --dataloader_prefetch_factor "$DATALOADER_PREFETCH" \
+        --dataloader_persistent_workers "$DATALOADER_PERSISTENT" \
         --logging_steps 1 \
         --eval_strategy steps \
         --eval_steps 300 \

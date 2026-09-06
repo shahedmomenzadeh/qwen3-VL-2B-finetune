@@ -129,6 +129,9 @@ log "Environment setup complete."
 # 2. HUGGINGFACE CACHE + TOKEN
 # ════════════════════════════════════════════════════════════════════════════
 export HF_HOME="${HF_HOME:-$SCRIPT_DIR/hf_cache}"
+# Single-threaded OpenMP per dataloader worker: with N workers decoding in
+# parallel, per-worker thread pools just oversubscribe the CPUs.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 HF_TOKEN="${HF_TOKEN:-}"
 [ -n "$HF_TOKEN" ] && export HF_TOKEN
 export PYTHONPATH="src:${PYTHONPATH:-}"
@@ -177,6 +180,18 @@ BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-1}"
 GRAD_ACCUM="${GRAD_ACCUM:-16}"
 NUM_DEVICES="${NUM_DEVICES:-1}"
 GLOBAL_BATCH_SIZE=$((BATCH_PER_DEVICE * GRAD_ACCUM * NUM_DEVICES))
+
+# Data loading: auto-size workers to CPUs (leave 2 for main/system), clamp
+# to [2, 16] — 64-frame decodes are ~150MB+ in flight per sample, so more
+# workers risk RAM exhaustion before adding speed. Override any of these.
+if [ -z "${DATALOADER_WORKERS:-}" ]; then
+    _NPROC=$(nproc 2>/dev/null || echo 8)
+    DATALOADER_WORKERS=$((_NPROC - 2))
+    [ "$DATALOADER_WORKERS" -lt 2 ] && DATALOADER_WORKERS=2
+    [ "$DATALOADER_WORKERS" -gt 16 ] && DATALOADER_WORKERS=16
+fi
+DATALOADER_PREFETCH="${DATALOADER_PREFETCH:-2}"
+DATALOADER_PERSISTENT="${DATALOADER_PERSISTENT:-True}"
 
 # Learning
 LR="${LR:-1e-4}"
@@ -227,6 +242,7 @@ log "  BATCH=$BATCH_PER_DEVICE  GRAD_ACCUM=$GRAD_ACCUM  GLOBAL_BS=$GLOBAL_BATCH_
 log "  LR=$LR  VISION_LR=$VISION_LR  MERGER_LR=$MERGER_LR"
 log "  EPOCHS=$NUM_EPOCHS  NFRAMES=$NFRAMES  FPS=${FPS:-unset}"
 log "  VIDEO_MIN=$VIDEO_MIN_PIXELS  VIDEO_MAX=$VIDEO_MAX_PIXELS"
+log "  WORKERS=$DATALOADER_WORKERS PREFETCH=$DATALOADER_PREFETCH PERSISTENT=$DATALOADER_PERSISTENT"
 log "  SUBSET_RATIO=$SUBSET_RATIO"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -328,7 +344,9 @@ COMMON_ARGS=(
     --max_seq_length 32768
     --gradient_checkpointing True
     --lazy_preprocess True --remove_unused_columns False
-    --dataloader_num_workers 4
+    --dataloader_num_workers "$DATALOADER_WORKERS"
+    --dataloader_prefetch_factor "$DATALOADER_PREFETCH"
+    --dataloader_persistent_workers "$DATALOADER_PERSISTENT"
     --logging_steps "$LOGGING_STEPS"
     --save_strategy "$SAVE_STRATEGY"
     --save_steps "$SAVE_STEPS"

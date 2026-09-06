@@ -119,6 +119,10 @@ Defaults for 48 GB single GPU; override via env vars. Scripts are source of trut
 |-----|---------|-------------|
 | `BATCH_PER_DEVICE` | 4 | Micro batch |
 | `GRAD_ACCUM` | 4 | Grad accum → global 16 |
+| `DATALOADER_WORKERS` | auto (`nproc-2`, clamp 2–16) | Decode workers (video-bound); override with a number |
+| `DATALOADER_PREFETCH` | 2 | Batches prefetched per worker |
+| `DATALOADER_PERSISTENT` | True | Keep workers alive across epochs |
+| `OMP_NUM_THREADS` | 1 | Per-worker OpenMP threads (avoid oversubscription) |
 | `NUM_DEVICES` | 1 | GPUs |
 | `NUM_EPOCHS` | `2` SFT / `1` GRPO | |
 | `LR` | 1e-4 | LLM LoRA LR |
