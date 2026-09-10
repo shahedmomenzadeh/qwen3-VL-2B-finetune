@@ -12,6 +12,9 @@
 #   bash train_sft.sh                          # full training, defaults
 #   SUBSET_RATIO=0.3 bash train_sft.sh         # 30% of training data (test run)
 #   BITS=16 NFRAMES=48 bash train_sft.sh       # 16-bit LoRA (no quantization)
+#   STAGE2_EPOCHS=3 CLIP_FRACTION=0.1 FULL_FRACTION=1.0 \
+#     MODEL_ID=shahedm2001/qwen3-vl-2b-cataract-sft \
+#     BATCH_PER_DEVICE=4 GRAD_ACCUM=4 bash train_sft.sh   # stage-2 resampled loop
 #
 # Repeat runs reuse the existing .venv (installs are skipped once imports
 # verify). Set FORCE_REINSTALL=1 to force a full package reinstall.
@@ -169,10 +172,29 @@ MODEL_ID="${MODEL_ID:-Qwen/Qwen3-VL-2B-Instruct}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/output}"
 DATA_PREFIX="${DATA_PREFIX:-data}"
 
-# QLoRA — production baseline r=16 alpha=32 (merger full-trainable, pos_embed frozen)
+# Stage-2 resampled continued-finetuning: STAGE2_EPOCHS>1 switches from one
+# N-epoch run over a fixed file to a loop of 1-epoch runs, each over a fresh
+# stratified subset (CLIP_FRACTION of clips split equally YT/PH + FULL_FRACTION
+# of full videos, seed = SEED + epoch; see scripts/build_epoch_subset.py).
+# Defaults below are the main-stage values; run with e.g.
+#   STAGE2_EPOCHS=3 CLIP_FRACTION=0.1 FULL_FRACTION=1.0 \
+#   MODEL_ID=shahedm2001/qwen3-vl-2b-cataract-sft BATCH_PER_DEVICE=4 GRAD_ACCUM=4 \
+#   bash train_sft.sh
+STAGE2_EPOCHS="${STAGE2_EPOCHS:-1}"
+CLIP_FRACTION="${CLIP_FRACTION:-1.0}"
+FULL_FRACTION="${FULL_FRACTION:-1.0}"
+SEED="${SEED:-42}"
+
+# QLoRA — production baseline r=16 alpha=32 (merger full-trainable, pos_embed frozen).
+# Stage-2 loop (small per-epoch data): lower capacity to avoid overfitting.
 BITS="${BITS:-4}"
-LORA_RANK="${LORA_RANK:-16}"
-LORA_ALPHA="${LORA_ALPHA:-32}"
+if [ "$STAGE2_EPOCHS" -gt 1 ]; then
+    LORA_RANK="${LORA_RANK:-8}"
+    LORA_ALPHA="${LORA_ALPHA:-16}"
+else
+    LORA_RANK="${LORA_RANK:-16}"
+    LORA_ALPHA="${LORA_ALPHA:-32}"
+fi
 LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
 
 # Batch (Optimized for 24 GB VRAM — effective batch = 1 * 16 = 16)
@@ -193,10 +215,16 @@ fi
 DATALOADER_PREFETCH="${DATALOADER_PREFETCH:-2}"
 DATALOADER_PERSISTENT="${DATALOADER_PERSISTENT:-True}"
 
-# Learning
-LR="${LR:-1e-4}"
-VISION_LR="${VISION_LR:-2e-6}"
-MERGER_LR="${MERGER_LR:-1e-5}"
+# Learning (stage-2 loop: halved defaults for continued finetuning)
+if [ "$STAGE2_EPOCHS" -gt 1 ]; then
+    LR="${LR:-5e-5}"
+    VISION_LR="${VISION_LR:-1e-6}"
+    MERGER_LR="${MERGER_LR:-5e-6}"
+else
+    LR="${LR:-1e-4}"
+    VISION_LR="${VISION_LR:-2e-6}"
+    MERGER_LR="${MERGER_LR:-1e-5}"
+fi
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
 WARMUP_STEPS="${WARMUP_STEPS:-10}"
 LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
@@ -216,7 +244,11 @@ EVAL_STRATEGY="${EVAL_STRATEGY:-no}"
 EVAL_STEPS="${EVAL_STEPS:-300}"
 PER_DEVICE_EVAL_BATCH_SIZE="${PER_DEVICE_EVAL_BATCH_SIZE:-1}"
 SAVE_STRATEGY="${SAVE_STRATEGY:-steps}"
-SAVE_STEPS="${SAVE_STEPS:-100}"
+if [ "$STAGE2_EPOCHS" -gt 1 ]; then
+    SAVE_STEPS="${SAVE_STEPS:-40}"
+else
+    SAVE_STEPS="${SAVE_STEPS:-100}"
+fi
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
 LOGGING_STEPS="${LOGGING_STEPS:-1}"
 REPORT_TO="${REPORT_TO:-tensorboard}"
@@ -244,6 +276,9 @@ log "  EPOCHS=$NUM_EPOCHS  NFRAMES=$NFRAMES  FPS=${FPS:-unset}"
 log "  VIDEO_MIN=$VIDEO_MIN_PIXELS  VIDEO_MAX=$VIDEO_MAX_PIXELS"
 log "  WORKERS=$DATALOADER_WORKERS PREFETCH=$DATALOADER_PREFETCH PERSISTENT=$DATALOADER_PERSISTENT"
 log "  SUBSET_RATIO=$SUBSET_RATIO"
+if [ "$STAGE2_EPOCHS" -gt 1 ]; then
+    log "  STAGE2 loop: $STAGE2_EPOCHS epochs x 1 epoch/run, CLIP_FRACTION=$CLIP_FRACTION FULL_FRACTION=$FULL_FRACTION SEED=$SEED"
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # 5. DATA PREPARATION
@@ -266,8 +301,14 @@ else
     log "Prepared JSONs already exist (set FORCE_REPREPARE=1 to regenerate)."
 fi
 
-# Apply SUBSET_RATIO to training data (only train, not eval)
-if [ "$SUBSET_RATIO" != "1.0" ] && [ "$SUBSET_RATIO" != "1" ]; then
+# Apply SUBSET_RATIO to training data (only train, not eval).
+# Ignored in stage-2 loop mode (epoch subsets replace it).
+if [ "$STAGE2_EPOCHS" -gt 1 ]; then
+    if [ "$SUBSET_RATIO" != "1.0" ] && [ "$SUBSET_RATIO" != "1" ]; then
+        warn "SUBSET_RATIO=$SUBSET_RATIO ignored in stage-2 loop (CLIP/FULL_FRACTION control sampling)."
+    fi
+    TRAIN_DATA="$DATA_PREFIX/sft_train_dataset_sft.json"
+elif [ "$SUBSET_RATIO" != "1.0" ] && [ "$SUBSET_RATIO" != "1" ]; then
     log "Subsampling training data to ${SUBSET_RATIO} of original..."
 
     $VENV_PYTHON -c "
@@ -323,6 +364,15 @@ else
     FLASH_ATTN_FLAG="--disable_flash_attn2 False"
 fi
 
+# Stage-2 loop runs a single epoch per epoch-file (scheduler restarts each
+# run — accepted per design); NUM_EPOCHS is ignored there.
+if [ "$STAGE2_EPOCHS" -gt 1 ]; then
+    RUN_EPOCHS=1
+    log "Stage-2 loop: 1 epoch per subset x $STAGE2_EPOCHS runs (NUM_EPOCHS=$NUM_EPOCHS ignored)."
+else
+    RUN_EPOCHS="$NUM_EPOCHS"
+fi
+
 COMMON_ARGS=(
     --bits "$BITS"
     --lora_enable True --vision_lora True --use_dora False
@@ -333,7 +383,7 @@ COMMON_ARGS=(
     --bf16 True --fp16 False --tf32 True
     $FLASH_ATTN_FLAG
     --use_liger_kernel True
-    --num_train_epochs "$NUM_EPOCHS"
+    --num_train_epochs "$RUN_EPOCHS"
     --per_device_train_batch_size "$BATCH_PER_DEVICE"
     --gradient_accumulation_steps "$GRAD_ACCUM"
     --learning_rate "$LR" --vision_lr "$VISION_LR" --merger_lr "$MERGER_LR"
@@ -365,10 +415,63 @@ COMMON_ARGS=(
 # ════════════════════════════════════════════════════════════════════════════
 log "=== 5. SFT (clips + full videos) ==="
 
-SFT_OUT="$OUTPUT_ROOT/sft_lora"
+if [ "$STAGE2_EPOCHS" -gt 1 ]; then
+    SFT_OUT="${SFT_OUT:-$OUTPUT_ROOT/sft_stage2_lora}"
+else
+    SFT_OUT="${SFT_OUT:-$OUTPUT_ROOT/sft_lora}"
+fi
 SFT_LOG_DIR="$OUTPUT_ROOT/logs/sft"
 
-if [ -f "$SFT_OUT/adapter_config.json" ]; then
+if [ "$STAGE2_EPOCHS" -gt 1 ]; then
+    # ── Stage-2 loop: fresh stratified subset per epoch, 1 epoch per run ──
+    log "=== 5. SFT stage-2 loop ($STAGE2_EPOCHS x 1 epoch) ==="
+    log "  base=$MODEL_ID  out=$SFT_OUT"
+    log "  CLIP_FRACTION=$CLIP_FRACTION (equal YT/PH)  FULL_FRACTION=$FULL_FRACTION  SEED=$SEED"
+    log "  rank=$LORA_RANK alpha=$LORA_ALPHA lr=$LR vision_lr=$VISION_LR merger_lr=$MERGER_LR"
+    if [ -f "$SFT_OUT/adapter_config.json" ] && [ -z "$(ls -d "$SFT_OUT"/checkpoint-* 2>/dev/null)" ]; then
+        log "  stage-2 adapter exists with no checkpoints — previous loop finished, skipping."
+        log "  (Delete $SFT_OUT to retrain.)"
+    else
+        for EPOCH in $(seq 1 "$STAGE2_EPOCHS"); do
+            EPOCH_JSON="$DATA_PREFIX/sft_stage2_epoch${EPOCH}.json"
+            EPOCH_SEED=$((SEED + EPOCH))
+            EPOCH_LOG_DIR="$SFT_LOG_DIR/epoch${EPOCH}"
+            log "--- stage-2 epoch $EPOCH/$STAGE2_EPOCHS (seed $EPOCH_SEED) ---"
+            $VENV_PYTHON scripts/build_epoch_subset.py \
+                "$DATA_PREFIX/sft_train_dataset_sft.json" "$EPOCH_JSON" \
+                --clip-fraction "$CLIP_FRACTION" --full-fraction "$FULL_FRACTION" \
+                --seed "$EPOCH_SEED"
+            mkdir -p "$EPOCH_LOG_DIR"
+            {
+                echo "model=$MODEL_ID stage2_epoch=$EPOCH/$STAGE2_EPOCHS seed=$EPOCH_SEED"
+                echo "train_data=$EPOCH_JSON val_data=$VAL_DATA"
+                echo "bits=$BITS lora_r=$LORA_RANK lora_alpha=$LORA_ALPHA dropout=$LORA_DROPOUT"
+                echo "batch_per_device=$BATCH_PER_DEVICE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH_SIZE"
+                echo "lr=$LR vision_lr=$VISION_LR merger_lr=$MERGER_LR wd=$WEIGHT_DECAY warmup=$WARMUP_STEPS sched=$LR_SCHEDULER"
+                echo "nframes=$NFRAMES fps=${FPS:-unset} px_min=$VIDEO_MIN_PIXELS px_max=$VIDEO_MAX_PIXELS"
+                echo "disable_flash_attn2=$DISABLE_FLASH_ATTN2 report_to=$REPORT_TO"
+                $VENV_PYTHON -c "
+import json
+for p in ('$EPOCH_JSON', '$VAL_DATA'):
+    try:
+        print(f'{p}: {len(json.load(open(p)))} samples')
+    except Exception as e:
+        print(f'{p}: unreadable ({e})')
+"
+            } > "$EPOCH_LOG_DIR/config.txt" 2>&1 || true
+            # Epochs 2+ resume optimizer state automatically (checkpoint-*);
+            # epoch files regenerate deterministically, so resume is consistent.
+            bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$EPOCH_LOG_DIR" "sft-e$EPOCH" \
+                $VENV_PYTHON -u src/train/train_sft.py \
+                --model_id "$MODEL_ID" \
+                --data_path "$EPOCH_JSON" \
+                --eval_path "$VAL_DATA" \
+                --output_dir "$SFT_OUT" \
+                "${COMMON_ARGS[@]}" \
+                || err "Stage-2 epoch $EPOCH failed — see $EPOCH_LOG_DIR/train.log + summary.txt"
+        done
+    fi
+elif [ -f "$SFT_OUT/adapter_config.json" ]; then
     log "  sft_lora already exists, skipping SFT."
     log "  (Delete $SFT_OUT to retrain.)"
 else
@@ -407,7 +510,11 @@ log "SFT complete."
 # ════════════════════════════════════════════════════════════════════════════
 log "=== 6. Merge SFT ==="
 
-SFT_MERGED="$OUTPUT_ROOT/sft_merged"
+if [ "$STAGE2_EPOCHS" -gt 1 ]; then
+    SFT_MERGED="${SFT_MERGED:-$OUTPUT_ROOT/sft_stage2_merged}"
+else
+    SFT_MERGED="${SFT_MERGED:-$OUTPUT_ROOT/sft_merged}"
+fi
 
 if [ -f "$SFT_MERGED/config.json" ]; then
     log "  sft_merged already exists, skipping merge."

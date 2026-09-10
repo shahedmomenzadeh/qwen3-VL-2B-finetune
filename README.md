@@ -163,7 +163,11 @@ Defaults for 48 GB single GPU; override via env vars. Scripts are source of trut
 ### Misc
 | Var | Default | Description |
 |-----|---------|-------------|
-| `SUBSET_RATIO` | 1.0 | Use only this fraction of training data (0.0–1.0). Eval always uses full set. |
+| `SUBSET_RATIO` | 1.0 | Use only this fraction of training data (0.0–1.0). Eval always uses full set. Ignored in stage-2 loop. |
+| `STAGE2_EPOCHS` | 1 | >1: loop of 1-epoch runs over fresh stratified subsets (continued finetuning) |
+| `CLIP_FRACTION` | 1.0 | Stage-2: fraction of clips per epoch, split equally between YT/PH sources |
+| `FULL_FRACTION` | 1.0 | Stage-2: fraction of full videos per epoch |
+| `SEED` | 42 | Base seed; stage-2 epoch e uses SEED+e (reproducible resampling) |
 | `DISABLE_FLASH_ATTN2` | 0 | Set 1 to use SDPA instead of flash-attn (if flash-attn install fails) |
 | `INSTALL_FLASH_ATTN` | 1 | Set 0 to skip flash-attn install |
 | `ENABLE_GEN_EVAL` | 1 | Use generation-based eval metrics (sets `SFT_COMPUTE_METRICS=eval/compute_metrics.py`) |
