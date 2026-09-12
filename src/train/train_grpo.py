@@ -244,9 +244,15 @@ def train():
         **data_module,
     )
 
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=True)
+    checkpoint_dirs = sorted(pathlib.Path(training_args.output_dir).glob("checkpoint-*"))
+    valid_checkpoints = [d for d in checkpoint_dirs if (d / "trainer_state.json").exists()]
+    should_resume = getattr(training_args, "resume_from_checkpoint", None)
+
+    if (should_resume is True or should_resume is None) and valid_checkpoints:
+        rank0_print(f"Resuming training from valid checkpoint: {valid_checkpoints[-1]}")
+        trainer.train(resume_from_checkpoint=str(valid_checkpoints[-1]))
     else:
+        rank0_print("Starting fresh training run...")
         trainer.train()
 
     trainer.save_state()

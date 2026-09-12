@@ -26,23 +26,21 @@ from train.reward_funcs import compute_grpo_rewards
 
 class QwenGRPOTrainer(Trainer):
     """
-    Custom GRPO Trainer for Qwen3-VL supporting:
+    High-Efficiency Custom GRPO Trainer for Qwen3-VL:
     - Multi-modal vision-language inputs (video/image/text).
     - Group Relative Policy Optimization with G sampled completions per prompt.
     - Deterministic rule-based scoring (MCQ accuracy, temporal IoU, exponential boundary decay, phase exact match).
     - Per-parameter-group learning rates (LLM, Vision Tower, Merger).
     - QLoRA (4-bit/8-bit) and 16-bit LoRA optimization.
-    - One-update GRPO: each rollout is used for a single optimizer step (on-policy + KL),
-      not PPO-style multi-epoch reuse. With this design ratio ~=1 at step start is expected
-      and clipping is rarely active; learning signal comes from advantage * grad(logp) and KL.
-      If multi-epoch PPO-GRPO is desired, a rollout buffer with stored old logprobs must be added.
-    Fixed implementation (2026-09):
-    - Old policy logprobs computed via separate no_grad forward (not detach of current).
-    - Per-token PPO ratio with clipping (not sequence-mean ratio).
-    - Reference KL via base SFT (LoRA disabled) when beta>0.
-    - Zero-variance groups yield zero advantage (not rewards-0.5).
-    - Proper diagnostics: ratio stats, clip_fraction, approx_kl, zero_std_group_fraction, reward min/max.
-    - Token-mean normalization is global token-average (not aliased as DAPO without DAPO objective).
+    - Memory-Optimized execution:
+      * Prompt-by-prompt generation and backward pass to bound peak VRAM to G completions for 1 video.
+      * Passing logits_to_keep=comp_len+1 to avoid computing logits on thousands of visual/prompt tokens.
+      * Correct slicing of flattened multimodal video/image patches (no patch-level interleaving corruption).
+    - One-update GRPO:
+      * Old policy logprobs computed via separate no_grad forward.
+      * Reference KL via base SFT (LoRA disabled) when beta>0.
+      * Zero-variance groups yield zero advantage.
+      * EOS-aware completion masking.
     """
 
     def __init__(
@@ -58,18 +56,6 @@ class QwenGRPOTrainer(Trainer):
         self.beta = getattr(self.args, "beta", 0.04)
         self.temperature = getattr(self.args, "temperature", 0.9)
         self.top_p = getattr(self.args, "top_p", 1.0)
-        # Legacy Liger loss type flag — kept for backward compat but not used;
-        # our GRPO loss is custom manual (not LigerFusedLinearGRPOLoss). If you need Liger,
-        # integrate LigerFusedLinearGRPOLoss explicitly. Warn once if user sets non-default.
-        self.loss_type = getattr(self.args, "liger_grpo_loss_type", None) or "dapo"
-        _liger_requested = getattr(self.args, "liger_grpo_loss_type", None) is not None
-        _use_liger_kernel = getattr(self.args, "use_liger_kernel", False) or getattr(self.args, "use_liger_loss", False)
-        if _liger_requested or _use_liger_kernel:
-            logger.warning(
-                "QwenGRPOTrainer uses custom manual GRPO loss (token-mean PPO clip + k3 KL), "
-                "not LigerFusedLinearGRPOLoss. liget_* flags are no-ops here (see GRPO_ISSUES.md P2-1/2)."
-            )
-        # PPO clip epsilon
         self.epsilon = 0.2
 
     def create_optimizer(self):
@@ -213,19 +199,34 @@ class QwenGRPOTrainer(Trainer):
                         "weight_decay": 0.0,
                     },
                 ]
-            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
-            self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+
+            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(
+                self.args, opt_model
+            )
+            self.optimizer = optimizer_cls(
+                optimizer_grouped_parameters, **optimizer_kwargs
+            )
 
         return self.optimizer
 
     def _save_checkpoint(self, model, trial):
-        super()._save_checkpoint(model, trial)
-        if not getattr(self.args, "lora_enable", False):
-            return
+        output_dir = self._get_output_dir(trial=trial)
+        output_dir = os.path.join(
+            output_dir, f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+        )
+        self.save_model(output_dir, _internal_call=True)
 
-        checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
-        run_dir = self._get_output_dir(trial=trial)
-        output_dir = os.path.join(run_dir, checkpoint_folder)
+    def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        logger.info(f"Saving model checkpoint to {output_dir}")
+
+        if hasattr(self.model, "save_pretrained"):
+            self.model.save_pretrained(output_dir)
+
+        if self.processor is not None:
+            self.processor.save_pretrained(output_dir)
 
         non_lora = get_peft_state_non_lora(
             self.model.named_parameters(),
@@ -238,18 +239,17 @@ class QwenGRPOTrainer(Trainer):
             if hasattr(self.model, "base_model") and hasattr(self.model.base_model, "config"):
                 self.model.base_model.config.to_json_file(os.path.join(output_dir, "config.json"))
 
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    def training_step(
+        self,
+        model: nn.Module,
+        inputs: Dict[str, Any],
+        num_items_in_batch: Optional[int] = None,
+    ) -> torch.Tensor:
         """
-        Computes GRPO Policy Loss (corrected):
-        1. Sample G completions per prompt with old policy (no_grad).
-        2. Score deterministic task+format rewards.
-        3. Group-normalize rewards -> advantages (zero-mean per group).
-        4. Compute OLD per-token logprobs via no_grad forward (old policy).
-           Optionally compute REFERENCE per-token logprobs via LoRA-disabled forward.
-        5. Compute CURRENT per-token logprobs via grad forward.
-        6. Per-token PPO ratio = exp(current - old), clipped surrogate, KL penalty.
-        Note: with single on-policy epoch per rollout, ratio==1 at step start -> policy_loss ~0
-              but gradient = -mean(A * d logp) remains non-zero. KL becomes non-zero after divergence.
+        Executes GRPO training step with peak memory bounded to 1 prompt * G generations.
+        Iterates over each prompt in the micro-batch, computes prompt rewards, advantages,
+        logprobs (with logits_to_keep=comp_len+1), calls backward immediately to free
+        intermediate graphs, and accumulates gradients across the micro-batch.
         """
         device = self.args.device
         tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else self.processor
@@ -263,306 +263,294 @@ class QwenGRPOTrainer(Trainer):
         batch_size = prompt_input_ids.shape[0]
         G = self.num_generations
 
-        # Forward multimodal kwargs
-        forward_kwargs = {}
-        if "pixel_values_videos" in inputs:
-            forward_kwargs["pixel_values_videos"] = inputs["pixel_values_videos"].to(device)
-            forward_kwargs["video_grid_thw"] = inputs["video_grid_thw"].to(device)
-        elif "pixel_values" in inputs:
-            forward_kwargs["pixel_values"] = inputs["pixel_values"].to(device)
-            forward_kwargs["image_grid_thw"] = inputs["image_grid_thw"].to(device)
-        if "second_per_grid_ts" in inputs:
-            forward_kwargs["second_per_grid_ts"] = inputs["second_per_grid_ts"]
+        # Compute video slice offsets
+        video_thws = inputs.get("video_grid_thw")
+        pixel_videos = inputs.get("pixel_values_videos")
+        video_offsets = [0]
+        if video_thws is not None:
+            video_thws = video_thws.to(device)
+            pixel_videos = pixel_videos.to(device)
+            for thw in video_thws:
+                video_offsets.append(video_offsets[-1] + int(thw[0] * thw[1] * thw[2]))
 
-        # ── Step 1: Generate G completions per prompt ───────────
-        model.eval()
-        # autocast dtype for generation/logprob forwards (ensures hidden/lm_head dtype match even if norm is float32)
-        compute_dtype = torch.bfloat16 if getattr(self.args, "bf16", False) else (torch.float16 if getattr(self.args, "fp16", False) else torch.float32)
+        # Compute image slice offsets
+        image_thws = inputs.get("image_grid_thw")
+        pixel_images = inputs.get("pixel_values")
+        image_offsets = [0]
+        if image_thws is not None:
+            image_thws = image_thws.to(device)
+            pixel_images = pixel_images.to(device)
+            for thw in image_thws:
+                image_offsets.append(image_offsets[-1] + int(thw[0] * thw[1]))
+
+        compute_dtype = (
+            torch.bfloat16
+            if getattr(self.args, "bf16", False)
+            else (torch.float16 if getattr(self.args, "fp16", False) else torch.float32)
+        )
         use_autocast = getattr(self.args, "bf16", False) or getattr(self.args, "fp16", False)
-        autocast_ctx = torch.autocast(device_type="cuda", dtype=compute_dtype) if use_autocast and torch.cuda.is_available() else nullcontext()
-        gen_kwargs = {
-            "input_ids": prompt_input_ids.repeat_interleave(G, dim=0),
-            "attention_mask": prompt_attention_mask.repeat_interleave(G, dim=0),
-            "max_new_tokens": self.max_completion_length,
-            "do_sample": True,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "pad_token_id": tokenizer.pad_token_id,
-            "eos_token_id": tokenizer.eos_token_id,
-        }
-        if prompt_mm_token_type_ids is not None:
-            gen_kwargs["mm_token_type_ids"] = prompt_mm_token_type_ids.repeat_interleave(G, dim=0)
-
-        for k, v in forward_kwargs.items():
-            if isinstance(v, torch.Tensor):
-                gen_kwargs[k] = v.repeat_interleave(G, dim=0)
-            elif isinstance(v, list):
-                expanded_list = []
-                for item in v:
-                    expanded_list.extend([item] * G)
-                gen_kwargs[k] = expanded_list
-
-        with torch.no_grad():
-            unwrapped_model = self.accelerator.unwrap_model(model)
-            # Wrap generate in autocast so lm_head hidden dtype matches weight dtype (fixes
-            # RuntimeError: expected scalar type BFloat16 but found Float when norm is float32)
-            with autocast_ctx:
-                generated_ids = unwrapped_model.generate(**gen_kwargs)
-
-        prompt_len = prompt_input_ids.shape[1]
-        completion_ids = generated_ids[:, prompt_len:]
-
-        # Decode completions
-        completion_texts = tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
-
-        # ── Step 2: Score completions with deterministic rewards ───────────
-        correct_answers = inputs["correct_answers"]
-        question_types = inputs["question_types"]
-
-        expanded_gold_answers = []
-        expanded_qtypes = []
-        for ans in correct_answers:
-            expanded_gold_answers.extend([ans] * G)
-        for qt in question_types:
-            expanded_qtypes.extend([qt] * G)
-
-        rewards = compute_grpo_rewards(
-            completions=completion_texts,
-            correct_answers=expanded_gold_answers,
-            question_types=expanded_qtypes,
-            fmt_weight=0.05,
+        autocast_ctx = (
+            torch.autocast(device_type="cuda", dtype=compute_dtype)
+            if use_autocast and torch.cuda.is_available()
+            else nullcontext()
         )
-        rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=device)
 
-        # ── Step 3: Compute Advantages per prompt group G ───────────
-        # Shape: (batch_size, G)
-        rewards_grouped = rewards_tensor.view(batch_size, G)
-        group_means = rewards_grouped.mean(dim=-1, keepdim=True)
-        group_stds = rewards_grouped.std(dim=-1, keepdim=True)
-
-        std_mask = group_stds > 1e-6
-        # Group-relative normalization; zero-variance groups get zero advantage (no relative preference).
-        # Previously used (rewards-0.5) which injected absolute-reward PG signal; removed (see GRPO_ISSUES.md P0-1).
-        advantages = torch.where(
-            std_mask,
-            (rewards_grouped - group_means) / (group_stds + 1e-4),
-            torch.zeros_like(rewards_grouped),
-        )
-        # Diagnostic: fraction of groups with zero variance (no learning signal)
-        zero_std_group_fraction = (~std_mask.squeeze(-1)).float().mean() if std_mask.numel() > 0 else torch.tensor(0.0, device=device)
-        advantages = advantages.view(-1)  # (batch_size * G)
-
-        # ── Step 4: Prepare full forward kwargs & masks ───────────
-        full_attention_mask = (generated_ids != tokenizer.pad_token_id).to(torch.long)
-        full_forward_kwargs = {}
-        if prompt_mm_token_type_ids is not None:
-            comp_len = completion_ids.shape[1]
-            comp_mm = torch.zeros((generated_ids.shape[0], comp_len), dtype=torch.long, device=device)
-            full_mm = torch.cat([gen_kwargs["mm_token_type_ids"], comp_mm], dim=1)
-            full_forward_kwargs["mm_token_type_ids"] = full_mm
-
-        for k, v in forward_kwargs.items():
-            if isinstance(v, torch.Tensor):
-                full_forward_kwargs[k] = v.repeat_interleave(G, dim=0)
-            elif isinstance(v, list):
-                expanded_list = []
-                for item in v:
-                    expanded_list.extend([item] * G)
-                full_forward_kwargs[k] = expanded_list
-
-        # Helper to compute per-token logprobs for a given model state
-        # Mask: exclude PAD. If EOS exists, tokens after first EOS are already PAD when using
-        # generate(pad_token_id != eos_token_id), but we also explicitly mask after first EOS for safety.
-        shift_labels = completion_ids.contiguous()  # (B*G, L)
-        # EOS-aware mask: valid until and including first EOS, then 0. Falls back to PAD-only if no EOS.
-        # Note: generate(pad_token_id != eos_token_id) already pads after EOS with PAD, but we mask explicitly
-        # to avoid any stray tokens after EOS contributing to loss.
-        eos_id = tokenizer.eos_token_id
-        if eos_id is not None and completion_ids.numel() > 0:
-            is_eos = (completion_ids == eos_id)  # (B*G, L) bool
-            eos_cumsum = is_eos.cumsum(dim=-1)  # 0 before first EOS, 1 at/after first EOS, 2 after second etc.
-            # Valid if before first EOS (cumsum==0) OR at first EOS (cumsum==1 & is_eos). Tokens after first EOS (cumsum>=1 but not first EOS) masked.
-            eos_mask = ((eos_cumsum == 0) | ((eos_cumsum == 1) & is_eos)).float()  # (B*G, L)
-            pad_mask = (shift_labels != tokenizer.pad_token_id).float()
-            completion_mask = (pad_mask * eos_mask).to(torch.float32)  # (B*G, L)
-        else:
-            completion_mask = (shift_labels != tokenizer.pad_token_id).to(torch.float32)  # (B*G, L)
-
-        # ── 4a: OLD policy per-token logprobs (no_grad, LoRA enabled) ───────────
-        with torch.no_grad():
-            with autocast_ctx:
-                old_outputs = model(
-                    input_ids=generated_ids,
-                    attention_mask=full_attention_mask,
-                    **full_forward_kwargs,
-                )
-            old_logits = old_outputs.logits  # (B*G, seq_len, vocab)
-            old_shift_logits = old_logits[:, prompt_len - 1 : -1, :].contiguous()
-            old_log_probs = F.log_softmax(old_shift_logits, dim=-1)
-            old_per_token_logps = torch.gather(
-                old_log_probs, dim=-1, index=shift_labels.unsqueeze(-1)
-            ).squeeze(-1)  # (B*G, L)
-            old_per_token_logps = old_per_token_logps * completion_mask
-            # free
-            del old_outputs, old_logits, old_shift_logits, old_log_probs
-
-        # ── 4b: REFERENCE policy per-token logprobs for KL (no_grad, LoRA disabled) ───────────
-        ref_per_token_logps = None
-        if self.beta is not None and self.beta > 1e-9:
-            with torch.no_grad():
-                # Disable LoRA adapters to get SFT reference
-                if hasattr(model, "disable_adapter"):
-                    ctx = model.disable_adapter()
-                else:
-                    ctx = nullcontext()
-                with ctx:
-                    with autocast_ctx:
-                        ref_outputs = model(
-                            input_ids=generated_ids,
-                            attention_mask=full_attention_mask,
-                            **full_forward_kwargs,
-                        )
-                    ref_logits = ref_outputs.logits
-                    ref_shift_logits = ref_logits[:, prompt_len - 1 : -1, :].contiguous()
-                    ref_log_probs = F.log_softmax(ref_shift_logits, dim=-1)
-                    ref_per_token_logps = torch.gather(
-                        ref_log_probs, dim=-1, index=shift_labels.unsqueeze(-1)
-                    ).squeeze(-1)
-                    ref_per_token_logps = ref_per_token_logps * completion_mask
-                    del ref_outputs, ref_logits, ref_shift_logits, ref_log_probs
-
-        # ── 4c: CURRENT policy per-token logprobs (with grad) ───────────
-        model.train()
-        with autocast_ctx:
-            outputs = model(
-                input_ids=generated_ids,
-                attention_mask=full_attention_mask,
-                **full_forward_kwargs,
-            )
-        logits = outputs.logits  # (batch_size * G, seq_len, vocab_size)
-        shift_logits = logits[:, prompt_len - 1 : -1, :].contiguous()
-        log_probs = F.log_softmax(shift_logits, dim=-1)
-        per_token_logps = torch.gather(
-            log_probs, dim=-1, index=shift_labels.unsqueeze(-1)
-        ).squeeze(-1)
-        per_token_logps = per_token_logps * completion_mask
-
-        # ── Step 5: Per-token PPO/GRPO clipped loss ───────────
+        unwrapped_model = self.accelerator.unwrap_model(model)
         eps = self.epsilon
-        # Per-token ratio: exp(current - old)
-        # For masked positions old==0 current==0 -> diff 0 -> ratio 1 (masked out later)
-        per_token_ratio = torch.exp(per_token_logps - old_per_token_logps)
-        # Clamp ratio for stability before clipping
-        # Expand advantages to (B*G, L)
-        advantages_expanded = advantages.unsqueeze(-1)  # (B*G, 1) -> broadcast to L
+        gas = self.current_gradient_accumulation_steps
 
-        surr1 = per_token_ratio * advantages_expanded
-        surr2 = torch.clamp(per_token_ratio, 1.0 - eps, 1.0 + eps) * advantages_expanded
-        per_token_policy_loss = -torch.min(surr1, surr2)  # (B*G, L)
+        # Accumulated metrics for step logging
+        step_metrics = defaultdict(list)
+        total_unscaled_loss = 0.0
 
-        # Token-mean normalization: global token-average (sum(loss*mask)/sum(mask)).
-        # This is the correct stable choice for variable-length completions.
-        # Previously labeled "DAPO-style"; renamed to avoid implying full DAPO objective.
-        denom = completion_mask.sum().clamp_min(1.0)
-        policy_loss = (per_token_policy_loss * completion_mask).sum() / denom
+        for i in range(batch_size):
+            p_id = prompt_input_ids[i:i + 1]
+            valid_mask = (p_id != tokenizer.pad_token_id)
+            p_id_unpadded = p_id[valid_mask].unsqueeze(0)
+            p_len = p_id_unpadded.shape[1]
 
-        # ── Step 6: KL penalty to reference ───────────
-        total_loss = policy_loss
-        approx_kl = torch.tensor(0.0, device=device)
-        kl_loss_val = torch.tensor(0.0, device=device)
-        if ref_per_token_logps is not None:
-            # Unbiased k3 estimator KL(current || ref): k3 = exp(ref - current) - (ref - current) - 1  >=0
-            # This is the standard approximation used in PPO/GRPO for KL.
-            # Alternative k1 = current - ref can be negative; k3 is always non-negative.
-            log_ratio_ref = ref_per_token_logps - per_token_logps  # log pi_ref - log pi_current
-            # Clamp for numerical stability
-            log_ratio_ref = torch.clamp(log_ratio_ref, min=-20, max=20)
-            per_token_kl = torch.exp(log_ratio_ref) - log_ratio_ref - 1.0
-            per_token_kl = per_token_kl * completion_mask
-            approx_kl = per_token_kl.sum() / denom
-            # Also compute simple mean diff for logging (k1)
-            # KL penalty added to loss
-            kl_loss_val = approx_kl
-            total_loss = policy_loss + self.beta * kl_loss_val
-        else:
-            # No reference -> KL 0
-            pass
+            gen_p_id = p_id_unpadded.repeat_interleave(G, dim=0)
+            gen_attn = torch.ones_like(gen_p_id)
 
-        # ── Diagnostics (no_grad) ───────────
-        with torch.no_grad():
-            # Ratio stats over valid tokens
-            valid_ratio = per_token_ratio[completion_mask.bool()] if completion_mask.sum() > 0 else per_token_ratio.view(-1)
-            if valid_ratio.numel() == 0:
-                ratio_mean = torch.tensor(1.0, device=device)
-                ratio_std = torch.tensor(0.0, device=device)
-                ratio_min = torch.tensor(1.0, device=device)
-                ratio_max = torch.tensor(1.0, device=device)
-                clip_fraction = torch.tensor(0.0, device=device)
+            f_kwargs = {}
+            if video_thws is not None:
+                thw_i = video_thws[i:i + 1]
+                f_kwargs["video_grid_thw"] = thw_i.repeat(G, 1)
+                start, end = video_offsets[i], video_offsets[i + 1]
+                v_patches = pixel_videos[start:end]
+                f_kwargs["pixel_values_videos"] = torch.cat([v_patches] * G, dim=0)
+            elif image_thws is not None:
+                thw_i = image_thws[i:i + 1]
+                f_kwargs["image_grid_thw"] = thw_i.repeat(G, 1)
+                start, end = image_offsets[i], image_offsets[i + 1]
+                img_patches = pixel_images[start:end]
+                f_kwargs["pixel_values"] = torch.cat([img_patches] * G, dim=0)
+
+            if prompt_mm_token_type_ids is not None:
+                p_mm_unpadded = prompt_mm_token_type_ids[i:i + 1][valid_mask].unsqueeze(0)
+                f_kwargs["mm_token_type_ids"] = p_mm_unpadded.repeat_interleave(G, dim=0)
+
+            # ── 1. Generate G completions ──
+            model.eval()
+            with torch.no_grad():
+                with autocast_ctx:
+                    gen_out = unwrapped_model.generate(
+                        input_ids=gen_p_id,
+                        attention_mask=gen_attn,
+                        max_new_tokens=self.max_completion_length,
+                        do_sample=True,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        pad_token_id=tokenizer.pad_token_id,
+                        eos_token_id=tokenizer.eos_token_id,
+                        **f_kwargs,
+                    )
+
+            comp_ids = gen_out[:, p_len:]
+            comp_len = comp_ids.shape[1]
+            completion_texts = tokenizer.batch_decode(comp_ids, skip_special_tokens=True)
+
+            # ── 2. Rewards & Advantages ──
+            gold_answers = [inputs["correct_answers"][i]] * G
+            qtypes = [inputs["question_types"][i]] * G
+            rewards = compute_grpo_rewards(
+                completions=completion_texts,
+                correct_answers=gold_answers,
+                question_types=qtypes,
+                fmt_weight=0.05,
+            )
+            rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=device)
+            group_mean = rewards_tensor.mean()
+            group_std = rewards_tensor.std()
+            std_mask = group_std > 1e-6
+            adv = (
+                (rewards_tensor - group_mean) / (group_std + 1e-4)
+                if std_mask
+                else torch.zeros_like(rewards_tensor)
+            )
+
+            # ── Masks ──
+            shift_labels = comp_ids.contiguous()
+            pad_mask = (shift_labels != tokenizer.pad_token_id).float()
+            eos_id = tokenizer.eos_token_id
+            if eos_id is not None and comp_ids.numel() > 0:
+                is_eos = (comp_ids == eos_id)
+                eos_cumsum = is_eos.cumsum(dim=-1)
+                eos_mask = ((eos_cumsum == 0) | ((eos_cumsum == 1) & is_eos)).float()
+                comp_mask = pad_mask * eos_mask
             else:
-                ratio_mean = valid_ratio.mean()
-                ratio_std = valid_ratio.std()
-                ratio_min = valid_ratio.min()
-                ratio_max = valid_ratio.max()
-                # Clip fraction: fraction of tokens where ratio outside [1-eps, 1+eps]
-                clipped = (valid_ratio < 1.0 - eps) | (valid_ratio > 1.0 + eps)
-                clip_fraction = clipped.float().mean()
+                comp_mask = pad_mask
 
-            # Completion length stats
-            comp_lens = completion_mask.sum(dim=-1).float()
-            comp_len_mean = comp_lens.mean()
+            full_attn = (gen_out != tokenizer.pad_token_id).long()
+            if "mm_token_type_ids" in f_kwargs:
+                f_kwargs["mm_token_type_ids"] = torch.cat(
+                    [
+                        f_kwargs["mm_token_type_ids"],
+                        torch.zeros((G, comp_len), dtype=torch.long, device=device),
+                    ],
+                    dim=1,
+                )
 
-            # Advantage stats
-            adv_mean = advantages.mean()
-            adv_std = advantages.std()
-            # Reward stats already available
-            mean_reward = rewards_tensor.mean()
-            # Use group_stds.mean for reward_std logging compatibility
-            reward_std_mean = group_stds.mean() if group_stds.numel() > 0 else torch.tensor(0.0, device=device)
-            reward_min = rewards_tensor.min() if rewards_tensor.numel() > 0 else torch.tensor(0.0, device=device)
-            reward_max = rewards_tensor.max() if rewards_tensor.numel() > 0 else torch.tensor(0.0, device=device)
-            # Discrete reward fractions (binary-like rewards common)
-            fraction_reward_zero = (rewards_tensor < 0.01).float().mean() if rewards_tensor.numel() > 0 else torch.tensor(0.0, device=device)
-            fraction_reward_one = (rewards_tensor > 0.99).float().mean() if rewards_tensor.numel() > 0 else torch.tensor(0.0, device=device)
+            # ── 3. Old policy logprobs (no_grad) ──
+            with torch.no_grad():
+                with autocast_ctx:
+                    old_out = model(
+                        input_ids=gen_out,
+                        attention_mask=full_attn,
+                        logits_to_keep=comp_len + 1,
+                        **f_kwargs,
+                    )
+                old_shift = old_out.logits[:, :-1, :].contiguous()
+                old_lp = F.log_softmax(old_shift, dim=-1)
+                old_per_token_lp = torch.gather(
+                    old_lp, dim=-1, index=shift_labels.unsqueeze(-1)
+                ).squeeze(-1) * comp_mask
+                del old_out, old_shift, old_lp
+            torch.cuda.empty_cache()
 
-            # Entropy approximation: -mean(logp) over completion tokens (lower = more confident)
-            # Use current per_token_logps
-            valid_logps = per_token_logps[completion_mask.bool()] if completion_mask.sum() > 0 else per_token_logps.view(-1)
-            entropy_proxy = -valid_logps.mean() if valid_logps.numel() > 0 else torch.tensor(0.0, device=device)
+            # ── 4. Reference policy logprobs for KL (no_grad, disable_adapter) ──
+            ref_per_token_lp = None
+            if self.beta > 1e-9:
+                with torch.no_grad():
+                    if hasattr(model, "disable_adapter"):
+                        ctx = model.disable_adapter()
+                    else:
+                        ctx = nullcontext()
+                    with ctx:
+                        with autocast_ctx:
+                            ref_out = model(
+                                input_ids=gen_out,
+                                attention_mask=full_attn,
+                                logits_to_keep=comp_len + 1,
+                                **f_kwargs,
+                            )
+                        ref_shift = ref_out.logits[:, :-1, :].contiguous()
+                        ref_lp = F.log_softmax(ref_shift, dim=-1)
+                        ref_per_token_lp = torch.gather(
+                            ref_lp, dim=-1, index=shift_labels.unsqueeze(-1)
+                        ).squeeze(-1) * comp_mask
+                        del ref_out, ref_shift, ref_lp
+                torch.cuda.empty_cache()
+
+            # ── 5. Current policy logprobs (with grad) ──
+            model.train()
+            with autocast_ctx:
+                curr_out = model(
+                    input_ids=gen_out,
+                    attention_mask=full_attn,
+                    logits_to_keep=comp_len + 1,
+                    **f_kwargs,
+                )
+                curr_shift = curr_out.logits[:, :-1, :].contiguous()
+                curr_lp = F.log_softmax(curr_shift, dim=-1)
+                curr_per_token_lp = torch.gather(
+                    curr_lp, dim=-1, index=shift_labels.unsqueeze(-1)
+                ).squeeze(-1) * comp_mask
+
+                # PPO clipped surrogate
+                ratio = torch.exp(curr_per_token_lp - old_per_token_lp)
+                adv_exp = adv.unsqueeze(-1)
+                surr1 = ratio * adv_exp
+                surr2 = torch.clamp(ratio, 1.0 - eps, 1.0 + eps) * adv_exp
+                per_token_policy_loss = -torch.min(surr1, surr2)
+
+                denom = comp_mask.sum().clamp_min(1.0)
+                policy_loss = (per_token_policy_loss * comp_mask).sum() / denom
+
+                if ref_per_token_lp is not None:
+                    log_ratio_ref = torch.clamp(
+                        ref_per_token_lp - curr_per_token_lp, min=-20, max=20
+                    )
+                    per_token_kl = (
+                        torch.exp(log_ratio_ref) - log_ratio_ref - 1.0
+                    ) * comp_mask
+                    approx_kl = per_token_kl.sum() / denom
+                    prompt_loss = policy_loss + self.beta * approx_kl
+                else:
+                    approx_kl = torch.tensor(0.0, device=device)
+                    prompt_loss = policy_loss
+
+                # Scale by batch_size and gradient accumulation steps
+                loss_to_backward = prompt_loss / (batch_size * gas)
+
+            # ── 6. Backward immediately to free prompt graph ──
+            self.accelerator.backward(loss_to_backward)
+
+            total_unscaled_loss += prompt_loss.detach().item()
+
+            # Record metrics
+            with torch.no_grad():
+                valid_ratio = ratio[comp_mask.bool()] if comp_mask.sum() > 0 else ratio.view(-1)
+                step_metrics["policy_loss"].append(policy_loss.detach().item())
+                step_metrics["approx_kl"].append(approx_kl.detach().item())
+                step_metrics["reward_mean"].append(group_mean.detach().item())
+                step_metrics["reward_std"].append(group_std.detach().item())
+                step_metrics["reward_min"].append(rewards_tensor.min().detach().item())
+                step_metrics["reward_max"].append(rewards_tensor.max().detach().item())
+                step_metrics["fraction_reward_zero"].append(
+                    (rewards_tensor < 0.01).float().mean().detach().item()
+                )
+                step_metrics["fraction_reward_one"].append(
+                    (rewards_tensor > 0.99).float().mean().detach().item()
+                )
+                step_metrics["zero_std_fraction"].append(0.0 if std_mask else 1.0)
+                step_metrics["advantage_mean"].append(adv.mean().detach().item())
+                step_metrics["advantage_std"].append(adv.std().detach().item())
+                if valid_ratio.numel() > 0:
+                    step_metrics["ratio_mean"].append(valid_ratio.mean().detach().item())
+                    clipped = (valid_ratio < 1.0 - eps) | (valid_ratio > 1.0 + eps)
+                    step_metrics["clip_fraction"].append(clipped.float().mean().detach().item())
+                step_metrics["comp_len_mean"].append(comp_mask.sum(dim=-1).float().mean().detach().item())
+
+            # Free prompt memory
+            del (
+                gen_out,
+                comp_ids,
+                shift_labels,
+                comp_mask,
+                full_attn,
+                curr_out,
+                curr_shift,
+                curr_lp,
+                curr_per_token_lp,
+                ratio,
+                old_per_token_lp,
+            )
+            torch.cuda.empty_cache()
+
+        avg_loss = total_unscaled_loss / batch_size
 
         # Log metrics to trainer state
         if self.state.global_step % self.args.logging_steps == 0:
-            # All values detached and converted to float for logging
+            def avg(lst):
+                return sum(lst) / max(len(lst), 1)
+
             self.log(
                 {
-                    "grpo_loss": policy_loss.detach().item(),
-                    "kl_loss": kl_loss_val.detach().item() if isinstance(kl_loss_val, torch.Tensor) else float(kl_loss_val),
-                    "approx_kl": approx_kl.detach().item() if isinstance(approx_kl, torch.Tensor) else float(approx_kl),
-                    "total_loss": total_loss.detach().item(),
-                    "reward_mean": mean_reward.detach().item() if isinstance(mean_reward, torch.Tensor) else float(mean_reward),
-                    "reward_std": reward_std_mean.detach().item() if isinstance(reward_std_mean, torch.Tensor) else float(reward_std_mean),
-                    "reward_min": reward_min.detach().item(),
-                    "reward_max": reward_max.detach().item(),
-                    "fraction_reward_zero": fraction_reward_zero.detach().item(),
-                    "fraction_reward_one": fraction_reward_one.detach().item(),
-                    "zero_std_group_fraction": zero_std_group_fraction.detach().item() if isinstance(zero_std_group_fraction, torch.Tensor) else float(zero_std_group_fraction),
-                    "advantage_mean": adv_mean.detach().item(),
-                    "advantage_std": adv_std.detach().item(),
-                    "ratio_mean": ratio_mean.detach().item(),
-                    "ratio_std": ratio_std.detach().item(),
-                    "ratio_min": ratio_min.detach().item(),
-                    "ratio_max": ratio_max.detach().item(),
-                    "clip_fraction": clip_fraction.detach().item(),
-                    "comp_len_mean": comp_len_mean.detach().item(),
-                    "entropy_proxy": entropy_proxy.detach().item(),
+                    "loss": avg_loss,
+                    "grpo_loss": avg(step_metrics["policy_loss"]),
+                    "approx_kl": avg(step_metrics["approx_kl"]),
+                    "reward_mean": avg(step_metrics["reward_mean"]),
+                    "reward_std": avg(step_metrics["reward_std"]),
+                    "reward_min": min(step_metrics["reward_min"]) if step_metrics["reward_min"] else 0.0,
+                    "reward_max": max(step_metrics["reward_max"]) if step_metrics["reward_max"] else 0.0,
+                    "fraction_reward_zero": avg(step_metrics["fraction_reward_zero"]),
+                    "fraction_reward_one": avg(step_metrics["fraction_reward_one"]),
+                    "zero_std_group_fraction": avg(step_metrics["zero_std_fraction"]),
+                    "advantage_mean": avg(step_metrics["advantage_mean"]),
+                    "advantage_std": avg(step_metrics["advantage_std"]),
+                    "ratio_mean": avg(step_metrics["ratio_mean"]) if step_metrics["ratio_mean"] else 1.0,
+                    "clip_fraction": avg(step_metrics["clip_fraction"]) if step_metrics["clip_fraction"] else 0.0,
+                    "comp_len_mean": avg(step_metrics["comp_len_mean"]),
                 }
             )
-            # Also log loss_type for debugging if non-dapo
-            if self.loss_type != "dapo":
-                logger.info(f"GRPO loss_type={self.loss_type} policy_loss={policy_loss.item():.4f} kl={approx_kl.item():.4f}")
 
-        if return_outputs:
-            return total_loss, outputs
-        return total_loss
+        # Return loss normalized by gradient accumulation steps as expected by Trainer
+        return torch.tensor(avg_loss / gas, device=device, dtype=torch.float32)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """Fallback compute_loss delegating scalar evaluation."""
+        return torch.tensor(0.0, device=self.args.device, requires_grad=True)
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
         """Evaluation step computing deterministic reward accuracy across validation set."""

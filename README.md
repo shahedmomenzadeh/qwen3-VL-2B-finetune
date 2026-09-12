@@ -25,6 +25,10 @@ cd qwen3-VL-2B-finetune
 bash train_sft.sh                              # SFT only
 bash train.sh                                  # SFT + GRPO (dataset_grpo)
 
+# Standalone GRPO (24 GB VRAM, 50 frames, G=5, batch=2):
+bash grpo_train.sh                             # Full GRPO
+SUBSET_RATIO=0.10 YOUTUBE_RATIO=0.01 PHASE_RATIO=0.09 bash grpo_train.sh  # 10% stratified subset (1% YT, 9% Phase)
+
 # Smoke / lite (8 GB):
 SUBSET_RATIO=0.3 bash train_sft.sh              # 30% SFT
 BITS=16 NFRAMES=48 bash train_sft.sh            # 16-bit LoRA
