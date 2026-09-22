@@ -2,6 +2,24 @@ import os
 import torch
 from peft import LoraConfig, get_peft_model
 import ast
+
+# Env quirk: deepspeed is installed (importable) but unusable without CUDA_HOME
+# for its JIT op check; accelerate's extract_model_from_parallel imports it
+# unconditionally during Trainer init. Hide it so unwrap skips DeepSpeed.
+try:
+    import accelerate.utils.other as _acc_other
+
+    _orig_is_ds = _acc_other.is_deepspeed_available
+    _acc_other.is_deepspeed_available = lambda *a, **k: False
+    try:
+        import transformers.utils.import_utils as _tui
+
+        _tui.is_deepspeed_available = lambda *a, **k: False
+    except Exception:
+        pass
+except Exception:
+    pass
+
 from transformers import (
     AutoProcessor,
     BitsAndBytesConfig,

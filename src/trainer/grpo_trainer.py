@@ -43,7 +43,99 @@ class QwenGRPOTrainer(Trainer):
     - Zero-variance groups yield zero advantage (not rewards-0.5).
     - Proper diagnostics: ratio stats, clip_fraction, approx_kl, zero_std_group_fraction, reward min/max.
     - Token-mean normalization is global token-average (not aliased as DAPO without DAPO objective).
+    - Memory (2026-09): logits_to_keep = comp_len + 1 on all three logprob forwards —
+      lm_head projects only completion positions, not the full prompt sequence.
+    - Vision blocks (2026-09): flat patch tensors expanded per-prompt-block for G
+      generations (not row-wise repeat_interleave, which interleaves patches
+      across prompts/videos); prompt micro-batching via training_step override.
     """
+
+    # Keys whose flat dim-0 blocks are split G-times per prompt (block = one
+    # prompt's rows). Grid tensors split by *_grid_lengths, pixel tensors by
+    # *_patch_lengths (patch rows for grids are prod(t,h,w) per grid row, so
+    # pixel and grid tensors share prompt ownership but not row counts).
+    _BLOCK_EXPAND_SPECS = (
+        # (tensor key, grid-lengths key, patch-lengths key or None if same tensor)
+        ("pixel_values_videos", "video_grid_lengths", "video_patch_lengths"),
+        ("video_grid_thw", "video_grid_lengths", None),
+        ("pixel_values", "image_grid_lengths", "image_patch_lengths"),
+        ("image_grid_thw", "image_grid_lengths", None),
+    )
+
+    def _block_expand_tensor(self, flat: torch.Tensor, grid_lens, patch_lens, G: int) -> torch.Tensor:
+        """Repeat each prompt's dim-0 block G times, preserving block order.
+
+        split lengths: patch_lens if given else grid_lens. Blocks are repeated
+        whole (torch.cat([b]*G)) so patch sequences stay intact, then concatenated
+        in prompt order: [p0 xG][p1 xG]...
+        """
+        lens = list(patch_lens) if patch_lens is not None else list(grid_lens)
+        if sum(lens) != flat.shape[0]:
+            raise ValueError(
+                f"block_expand length mismatch: sum(lengths)={sum(lens)} != "
+                f"flat dim-0 {flat.shape[0]} (lengths={lens})"
+            )
+        blocks = torch.split(flat, lens, dim=0) if lens else []
+        return torch.cat([b.repeat(G, *([1] * (b.dim() - 1))) for b in blocks], dim=0)
+
+    def _expand_kwargs_for_generations(
+        self, forward_kwargs: Dict[str, Any], inputs: Dict[str, Any], G: int,
+        batch_size: int = 0,
+    ) -> Dict[str, Any]:
+        """Expand flat vision kwargs to B*G rows, one intact block per prompt.
+
+        Per-prompt tensors (B rows) use repeat_interleave; flat patch/grid
+        tensors use block expansion via collator lengths metadata; lists
+        (second_per_grid_ts) split by per-example lengths. Falls back to plain
+        repeat_interleave when lengths metadata is absent (e.g. custom loader)
+        only if the tensor already has B rows.
+        """
+        expanded: Dict[str, Any] = {}
+        for k, v in forward_kwargs.items():
+            spec = next((s for s in self._BLOCK_EXPAND_SPECS if s[0] == k), None)
+            if spec is not None and isinstance(v, torch.Tensor):
+                _, grid_key, patch_key = spec
+                grid_lens = inputs.get(grid_key)
+                patch_lens = inputs.get(patch_key) if patch_key else None
+                if grid_lens is not None:
+                    expanded[k] = self._block_expand_tensor(v, grid_lens, patch_lens, G)
+                    continue
+                # Fallback (no metadata): safe only for B-row tensors.
+                if batch_size and v.shape[0] == batch_size:
+                    expanded[k] = v.repeat_interleave(G, dim=0)
+                    continue
+                raise ValueError(
+                    f"cannot expand '{k}' ({v.shape[0]} rows, batch {batch_size}): "
+                    f"no '{grid_key}' metadata from collator"
+                )
+            elif k == "second_per_grid_ts" and isinstance(v, list):
+                lens = inputs.get("second_per_grid_lengths")
+                if lens is not None:
+                    if sum(lens) != len(v):
+                        raise ValueError(
+                            f"second_per_grid_ts length mismatch: sum={sum(lens)} != {len(v)}"
+                        )
+                    out = []
+                    idx = 0
+                    for n in lens:
+                        out.extend(v[idx : idx + n] * G)
+                        idx += n
+                    expanded[k] = out
+                else:
+                    out = []
+                    for item in v:
+                        out.extend([item] * G)
+                    expanded[k] = out
+            elif isinstance(v, torch.Tensor):
+                expanded[k] = v.repeat_interleave(G, dim=0)
+            elif isinstance(v, list):
+                out = []
+                for item in v:
+                    out.extend([item] * G)
+                expanded[k] = out
+            else:
+                expanded[k] = v
+        return expanded
 
     def __init__(
         self,
@@ -238,6 +330,84 @@ class QwenGRPOTrainer(Trainer):
             if hasattr(self.model, "base_model") and hasattr(self.model.base_model, "config"):
                 self.model.base_model.config.to_json_file(os.path.join(output_dir, "config.json"))
 
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        """Prompt micro-batching: `grpo_micro_prompts` prompts per compute_loss call.
+
+        GRPO compute_loss materializes G full video streams at once; with B>1
+        prompts that is B*G streams in parallel. Splitting the batch into
+        single-prompt slices keeps peak VRAM at one prompt's cost. Each slice's
+        grad is scaled by 1/num_slices (and by gradient-accumulation steps,
+        mirroring Trainer.training_step) so the optimizer step matches the
+        full-batch mean.
+        """
+        prompt_count = inputs["prompt_input_ids"].shape[0]
+        micro = max(1, int(getattr(self.args, "grpo_micro_prompts", 1) or 1))
+        micro = min(micro, prompt_count)
+
+        if micro >= prompt_count:
+            loss = super().training_step(model, inputs, num_items_in_batch)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return loss
+
+        inputs = self._prepare_inputs(inputs)
+        model.train()
+        # Number of micro slices (ceil) — each slice contributes 1/num_slices.
+        num_slices = (prompt_count + micro - 1) // micro
+        # Mirror Trainer's gradient-accumulation scaling.
+        gas = getattr(self, "current_gradient_accumulation_steps", None)
+        if gas is None:
+            gas = getattr(self.args, "gradient_accumulation_steps", 1) or 1
+
+        # Per-example lengths for flat vision blocks / timestamp lists.
+        lens_map = {
+            "pixel_values_videos": inputs.get("video_patch_lengths"),
+            "video_grid_thw": inputs.get("video_grid_lengths"),
+            "pixel_values": inputs.get("image_patch_lengths"),
+            "image_grid_thw": inputs.get("image_grid_lengths"),
+            "second_per_grid_ts": inputs.get("second_per_grid_lengths"),
+        }
+        starts_map = {}
+        for key, lens in lens_map.items():
+            if lens is None or key not in inputs:
+                continue
+            starts = [0]
+            for n in lens:
+                starts.append(starts[-1] + int(n))
+            starts_map[key] = starts
+
+        total = None
+        with self.compute_loss_context_manager():
+            for s in range(num_slices):
+                lo = s * micro
+                hi = min(lo + micro, prompt_count)
+                sl = slice(lo, hi)
+                sub = {}
+                for k, v in inputs.items():
+                    if k in starts_map:
+                        # Flat vision blocks / timestamp lists FIRST: their dim-0
+                        # row count can coincidentally equal prompt_count (e.g. 2
+                        # prompts x 1 video = 2 grid rows), which would mis-slice
+                        # as a per-prompt tensor. Block slicing is always right.
+                        a, b = starts_map[k][lo], starts_map[k][hi]
+                        sub[k] = v[a:b] if isinstance(v, torch.Tensor) else v[a:b]
+                    elif isinstance(v, torch.Tensor) and v.shape[0] == prompt_count:
+                        # Per-prompt B-row tensors (input_ids, mask, mm ids).
+                        sub[k] = v[sl]
+                    elif isinstance(v, list) and len(v) == prompt_count:
+                        # Per-prompt lists: gold answers, qtypes, lengths metadata.
+                        sub[k] = v[sl]
+                    else:
+                        sub[k] = v
+                loss = self.compute_loss(model, sub)
+                loss = loss / (num_slices * gas)
+                self.accelerator.backward(loss)
+                total = loss.detach() if total is None else total + loss.detach()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        # Rescale to the pre-division mean for logging (matches Trainer return).
+        return total * gas if total is not None else None
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
         Computes GRPO Policy Loss (corrected):
@@ -293,14 +463,7 @@ class QwenGRPOTrainer(Trainer):
         if prompt_mm_token_type_ids is not None:
             gen_kwargs["mm_token_type_ids"] = prompt_mm_token_type_ids.repeat_interleave(G, dim=0)
 
-        for k, v in forward_kwargs.items():
-            if isinstance(v, torch.Tensor):
-                gen_kwargs[k] = v.repeat_interleave(G, dim=0)
-            elif isinstance(v, list):
-                expanded_list = []
-                for item in v:
-                    expanded_list.extend([item] * G)
-                gen_kwargs[k] = expanded_list
+        gen_kwargs.update(self._expand_kwargs_for_generations(forward_kwargs, inputs, G, batch_size))
 
         with torch.no_grad():
             unwrapped_model = self.accelerator.unwrap_model(model)
@@ -361,14 +524,7 @@ class QwenGRPOTrainer(Trainer):
             full_mm = torch.cat([gen_kwargs["mm_token_type_ids"], comp_mm], dim=1)
             full_forward_kwargs["mm_token_type_ids"] = full_mm
 
-        for k, v in forward_kwargs.items():
-            if isinstance(v, torch.Tensor):
-                full_forward_kwargs[k] = v.repeat_interleave(G, dim=0)
-            elif isinstance(v, list):
-                expanded_list = []
-                for item in v:
-                    expanded_list.extend([item] * G)
-                full_forward_kwargs[k] = expanded_list
+        full_forward_kwargs.update(self._expand_kwargs_for_generations(forward_kwargs, inputs, G, batch_size))
 
         # Helper to compute per-token logprobs for a given model state
         # Mask: exclude PAD. If EOS exists, tokens after first EOS are already PAD when using
@@ -388,17 +544,24 @@ class QwenGRPOTrainer(Trainer):
         else:
             completion_mask = (shift_labels != tokenizer.pad_token_id).to(torch.float32)  # (B*G, L)
 
+        comp_len = completion_ids.shape[1]
+        # logits_to_keep: positions needed = prompt_len-1..seq_len-1 = comp_len+1 trailing slots.
+        logits_to_keep = comp_len + 1
+
         # ── 4a: OLD policy per-token logprobs (no_grad, LoRA enabled) ───────────
         with torch.no_grad():
             with autocast_ctx:
                 old_outputs = model(
                     input_ids=generated_ids,
                     attention_mask=full_attention_mask,
+                    logits_to_keep=logits_to_keep,
                     **full_forward_kwargs,
                 )
-            old_logits = old_outputs.logits  # (B*G, seq_len, vocab)
-            old_shift_logits = old_logits[:, prompt_len - 1 : -1, :].contiguous()
-            old_log_probs = F.log_softmax(old_shift_logits, dim=-1)
+            old_logits = old_outputs.logits  # (B*G, comp_len+1, vocab)
+            # Window covers input positions prompt_len-1..T-1; drop the last slot
+            # (predicts one past the completion) -> positions prompt_len-1..T-2.
+            old_shift_logits = old_logits[:, :-1, :].contiguous() if comp_len > 0 else old_logits[:, :0, :]
+            old_log_probs = F.log_softmax(old_shift_logits.float(), dim=-1)
             old_per_token_logps = torch.gather(
                 old_log_probs, dim=-1, index=shift_labels.unsqueeze(-1)
             ).squeeze(-1)  # (B*G, L)
@@ -420,11 +583,12 @@ class QwenGRPOTrainer(Trainer):
                         ref_outputs = model(
                             input_ids=generated_ids,
                             attention_mask=full_attention_mask,
+                            logits_to_keep=logits_to_keep,
                             **full_forward_kwargs,
                         )
                     ref_logits = ref_outputs.logits
-                    ref_shift_logits = ref_logits[:, prompt_len - 1 : -1, :].contiguous()
-                    ref_log_probs = F.log_softmax(ref_shift_logits, dim=-1)
+                    ref_shift_logits = ref_logits[:, :-1, :].contiguous() if comp_len > 0 else ref_logits[:, :0, :]
+                    ref_log_probs = F.log_softmax(ref_shift_logits.float(), dim=-1)
                     ref_per_token_logps = torch.gather(
                         ref_log_probs, dim=-1, index=shift_labels.unsqueeze(-1)
                     ).squeeze(-1)
@@ -437,11 +601,12 @@ class QwenGRPOTrainer(Trainer):
             outputs = model(
                 input_ids=generated_ids,
                 attention_mask=full_attention_mask,
+                logits_to_keep=logits_to_keep,
                 **full_forward_kwargs,
             )
-        logits = outputs.logits  # (batch_size * G, seq_len, vocab_size)
-        shift_logits = logits[:, prompt_len - 1 : -1, :].contiguous()
-        log_probs = F.log_softmax(shift_logits, dim=-1)
+        logits = outputs.logits  # (batch_size * G, comp_len+1, vocab_size)
+        shift_logits = logits[:, :-1, :].contiguous() if comp_len > 0 else logits[:, :0, :]
+        log_probs = F.log_softmax(shift_logits.float(), dim=-1)
         per_token_logps = torch.gather(
             log_probs, dim=-1, index=shift_labels.unsqueeze(-1)
         ).squeeze(-1)

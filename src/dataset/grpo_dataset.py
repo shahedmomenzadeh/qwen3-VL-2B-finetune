@@ -274,6 +274,15 @@ class DataCollatorForGRPODataset(object):
         batch_video_thw = []
         batch_image_thw = []
         batch_second_per_grid_ts = []
+        # Per-example block lengths. Patch/pixel tensors are flat-concatenated
+        # across the batch, so the trainer needs these boundaries to expand
+        # per-prompt blocks intact for G generations (repeat_interleave on the
+        # flat tensor would interleave patches across prompts/videos).
+        video_grid_lengths = []    # num videos per example (rows of video_grid_thw)
+        video_patch_lengths = []   # num patch rows per example (rows of pixel_values_videos)
+        image_grid_lengths = []    # num images per example (rows of image_grid_thw)
+        image_patch_lengths = []   # num patch rows per example (rows of pixel_values)
+        second_per_grid_lengths = []  # num timestamp entries per example
 
         correct_answers = []
         question_types = []
@@ -288,12 +297,25 @@ class DataCollatorForGRPODataset(object):
             if "pixel_values_videos" in example:
                 batch_pixel_video_values.append(example["pixel_values_videos"])
                 batch_video_thw.append(example["video_grid_thw"])
-            elif "pixel_values" in example:
+                video_grid_lengths.append(int(example["video_grid_thw"].shape[0]))
+                video_patch_lengths.append(int(example["pixel_values_videos"].shape[0]))
+            else:
+                video_grid_lengths.append(0)
+                video_patch_lengths.append(0)
+            if "pixel_values" in example:
                 batch_pixel_values.append(example["pixel_values"])
                 batch_image_thw.append(example["image_grid_thw"])
+                image_grid_lengths.append(int(example["image_grid_thw"].shape[0]))
+                image_patch_lengths.append(int(example["pixel_values"].shape[0]))
+            else:
+                image_grid_lengths.append(0)
+                image_patch_lengths.append(0)
 
             if "second_per_grid_ts" in example:
                 batch_second_per_grid_ts.extend(example["second_per_grid_ts"])
+                second_per_grid_lengths.append(len(example["second_per_grid_ts"]))
+            else:
+                second_per_grid_lengths.append(0)
 
             correct_answers.append(example.get("correct_answer", ""))
             question_types.append(example.get("question_type", ""))
@@ -319,6 +341,12 @@ class DataCollatorForGRPODataset(object):
             "reference_reasonings": reference_reasonings,
             "reward_types": reward_types,
             "sample_ids": sample_ids,
+            # Flat-tensor block boundaries (rows per example) for G-expansion.
+            "video_grid_lengths": video_grid_lengths,
+            "video_patch_lengths": video_patch_lengths,
+            "image_grid_lengths": image_grid_lengths,
+            "image_patch_lengths": image_patch_lengths,
+            "second_per_grid_lengths": second_per_grid_lengths,
         }
 
         if len(batch_pixel_video_values) > 0:

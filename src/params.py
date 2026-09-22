@@ -133,6 +133,10 @@ class GRPOArguments(TrainingArguments):
     repetition_penalty: float = 1.0
     max_completion_length: int = 256
     max_prompt_length: int = 512
+    grpo_micro_prompts: int = field(
+        default=1,
+        metadata={"help": "Prompts per compute_loss call in training_step micro-batching (1 = one prompt at a time)."},
+    )
     # Legacy: kept for backward compat but not used by QwenGRPOTrainer (custom manual loss).
     # GRPO_ISSUES.md P2-1/2: manual loss computes token-mean PPO clip + k3 KL; not Liger.
     use_liger_loss: bool = field(default=False, metadata={"help": "Legacy: no-op for QwenGRPOTrainer (manual GRPO loss)."})
