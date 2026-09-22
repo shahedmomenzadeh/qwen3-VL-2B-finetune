@@ -70,6 +70,7 @@ fi
 DATALOADER_PREFETCH="${DATALOADER_PREFETCH:-2}"
 DATALOADER_PERSISTENT="${DATALOADER_PERSISTENT:-True}"
 NUM_GENERATIONS="${NUM_GENERATIONS:-4}"
+GRPO_MICRO_PROMPTS="${GRPO_MICRO_PROMPTS:-1}"
 MAX_COMP="${MAX_COMP:-256}"
 NUM_EPOCHS="${NUM_EPOCHS:-1}"
 
@@ -91,12 +92,15 @@ FORCE_REPREPARE="${FORCE_REPREPARE:-0}"
 REPORT_TO="${REPORT_TO:-tensorboard}"
 
 log "MODEL_ID=$MODEL_ID"
-log "BITS=$BITS RANK=$LORA_RANK BATCH=${BATCH_PER_DEVICE}x${GRAD_ACCUM} NG=$NUM_GENERATIONS MAX_COMP=$MAX_COMP EPOCHS=$NUM_EPOCHS"
+log "BITS=$BITS RANK=$LORA_RANK BATCH=${BATCH_PER_DEVICE}x${GRAD_ACCUM} NG=$NUM_GENERATIONS MICRO=$GRPO_MICRO_PROMPTS MAX_COMP=$MAX_COMP EPOCHS=$NUM_EPOCHS"
 log "WORKERS=$DATALOADER_WORKERS PREFETCH=$DATALOADER_PREFETCH PERSISTENT=$DATALOADER_PERSISTENT"
 log "NFRAMES=$NFRAMES VIDEO_MIN=$VIDEO_MIN_PIXELS VIDEO_MAX=$VIDEO_MAX_PIXELS"
 log "OUTPUT=$OUTPUT_ROOT/grpo_lora -> $OUTPUT_ROOT/grpo_merged"
 
 # ── 4. Data Preparation ────────────────────────────────────────────────────────
+# Auto-restore GRPO data from HF Hub on a fresh machine (no-op when present)
+GRPO_DATASET_ROOT="$GRPO_DATASET_ROOT" bash "$SCRIPT_DIR/scripts/ensure_dataset_grpo.sh"
+
 for split in Train Validation; do
     [ -d "$GRPO_DATASET_ROOT/$split" ] || err "$GRPO_DATASET_ROOT/$split missing"
 done
@@ -139,7 +143,7 @@ mkdir -p "$GRPO_LOG_DIR"
     echo "model=$MODEL_ID"
     echo "train_data=$TRAIN_JSON val_data=$VAL_JSON"
     echo "bits=$BITS lora_r=$LORA_RANK lora_alpha=$LORA_ALPHA dropout=$LORA_DROPOUT"
-    echo "batch_per_device=$BATCH_PER_DEVICE grad_accum=$GRAD_ACCUM ngen=$NUM_GENERATIONS max_comp=$MAX_COMP epochs=$NUM_EPOCHS"
+    echo "batch_per_device=$BATCH_PER_DEVICE grad_accum=$GRAD_ACCUM ngen=$NUM_GENERATIONS micro=$GRPO_MICRO_PROMPTS max_comp=$MAX_COMP epochs=$NUM_EPOCHS"
     echo "lr=$LR vision_lr=$VISION_LR merger_lr=$MERGER_LR beta=$BETA temp=$TEMPERATURE top_p=$TOP_P"
     echo "nframes=$NFRAMES fps=${FPS:-unset} px_min=$VIDEO_MIN_PIXELS px_max=$VIDEO_MAX_PIXELS"
     echo "disable_flash_attn2=$DISABLE_FLASH_ATTN2 report_to=$REPORT_TO"
@@ -169,6 +173,7 @@ bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$GRPO_LOG_DIR" "grpo" \
     --use_liger_kernel False \
     --num_train_epochs "$NUM_EPOCHS" \
     --num_generations "$NUM_GENERATIONS" \
+    --grpo_micro_prompts "$GRPO_MICRO_PROMPTS" \
     --per_device_train_batch_size "$BATCH_PER_DEVICE" \
     --gradient_accumulation_steps "$GRAD_ACCUM" \
     --max_completion_length "$MAX_COMP" \
