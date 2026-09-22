@@ -73,7 +73,8 @@ if [ -z "$MODEL_ID_RESOLVED" ]; then
     warn "No SFT checkpoint found, falling back to base: $MODEL_ID_RESOLVED"
 fi
 MODEL_ID="$MODEL_ID_RESOLVED"
-GRPO_DATASET_ROOT="dataset_grpo"
+GRPO_DATASET_ROOT="${GRPO_DATASET_ROOT:-dataset_grpo}"
+GRPO_DATASET_ROOT="$GRPO_DATASET_ROOT" VENV_PYTHON="${VENV_PYTHON:-.venv/bin/python}" bash "$SCRIPT_DIR/scripts/ensure_dataset_grpo.sh"
 # Realistic lite GRPO uses 30 train / 7 val balanced across 7 tasks (~4-5 per task) under OUTPUT_DIR
 # (isolated from data/lite_e2e which stays 14/7 for lite_e2e_benchmark.sh).
 DATA_TRAIN="$OUTPUT_DIR/grpo_train.json"
@@ -183,6 +184,7 @@ log "Starting GRPO probe (G=4, nframes=8, max_completion=1024, rank=32, samples=
     --use_liger_kernel False \
     --max_steps "$GRPO_MAX_STEPS" \
     --num_generations 4 \
+    --grpo_micro_prompts "${GRPO_MICRO_PROMPTS:-1}" \
     --per_device_train_batch_size 1 \
     --gradient_accumulation_steps 1 \
     --max_completion_length 1024 \
