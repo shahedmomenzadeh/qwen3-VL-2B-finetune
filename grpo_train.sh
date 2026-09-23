@@ -16,20 +16,92 @@ err()  { echo -e "\033[1;31m[grpo] ERROR:\033[0m $1" >&2; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# ── 1. Env Check ──────────────────────────────────────────────────────────────
+# ── 1. Environment Setup (mirrors train_sft.sh: uv -> .venv via uv.lock) ──
+log "=== 1. Environment Setup ==="
+
+if ! command -v uv &>/dev/null; then
+    log "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    if [ -f "${HOME}/.local/bin/env" ]; then
+        # shellcheck source=/dev/null
+        source "${HOME}/.local/bin/env"
+    else
+        export PATH="${HOME}/.cargo/bin:${HOME}/.local/bin:${PATH:-}"
+    fi
+    if ! command -v uv &>/dev/null; then
+        err "uv was installed but is still not on PATH. Add ~/.cargo/bin or ~/.local/bin to PATH and re-run."
+    fi
+fi
+log "uv version: $(uv --version)"
+
+if [ ! -d ".venv" ]; then
+    log "Creating virtual environment..."
+    uv venv --python 3.12
+fi
+
 if [ -f ".venv/bin/python" ]; then
     VENV_PYTHON=".venv/bin/python"
 elif [ -f ".venv/Scripts/python.exe" ]; then
     VENV_PYTHON=".venv/Scripts/python.exe"
 else
-    err ".venv not found — run bash setup.sh or bash train_sft.sh first"
+    err ".venv creation failed — no python binary found in .venv"
 fi
+log "Python: $($VENV_PYTHON --version)"
+
+# Deterministic env via uv.lock (fast no-op when already in sync).
+# Set FORCE_REINSTALL=1 to reinstall every locked package from scratch.
+if [ "${FORCE_REINSTALL:-0}" = "1" ]; then
+    log "FORCE_REINSTALL=1 — reinstalling locked environment..."
+    uv sync --reinstall
+else
+    log "Syncing environment (uv.lock)..."
+    uv sync
+fi
+
+# Optional: flash-attn for faster attention (skip if build fails)
+INSTALL_FLASH_ATTN="${INSTALL_FLASH_ATTN:-1}"
+if [ "$INSTALL_FLASH_ATTN" = "1" ]; then
+    log "Installing flash-attn (this may take a few minutes to compile)..."
+    uv pip install --python "$VENV_PYTHON" flash-attn --no-build-isolation 2>&1 || {
+        warn "flash-attn install failed — continuing with SDPA attention"
+        warn "To use flash attention, install manually: uv pip install flash-attn --no-build-isolation"
+    }
+fi
+
+# Auto-fallback: if flash_attn isn't importable (install skipped or build
+# failed), force SDPA so the model loader doesn't request flash_attention_2.
+if ! "$VENV_PYTHON" -c "import flash_attn" 2>/dev/null; then
+    if [ "${DISABLE_FLASH_ATTN2:-0}" != "1" ]; then
+        warn "flash_attn not importable — forcing SDPA (DISABLE_FLASH_ATTN2=1)."
+        DISABLE_FLASH_ATTN2=1
+    fi
+fi
+
+# Verify core imports
+log "Verifying installation..."
+$VENV_PYTHON -c "
+import torch
+print(f'torch: {torch.__version__}')
+print(f'CUDA available: {torch.cuda.is_available()}')
+print(f'GPU count: {torch.cuda.device_count()}')
+import transformers; print(f'transformers: {transformers.__version__}')
+from transformers import AutoModelForImageTextToText; print('AutoModelForImageTextToText: OK')
+import peft; print(f'peft: {peft.__version__}')
+import trl; print(f'trl: {trl.__version__}')
+import liger_kernel; print('liger_kernel: OK')
+import bitsandbytes; print(f'bitsandbytes: {bitsandbytes.__version__}')
+import qwen_vl_utils; print('qwen_vl_utils: OK')
+" || err "Package verification failed"
+
+log "Environment setup complete."
 
 export HF_HOME="${HF_HOME:-$SCRIPT_DIR/hf_cache}"
 export PYTHONPATH="src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 # Single-threaded OpenMP per dataloader worker (avoid oversubscription).
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+HF_TOKEN="${HF_TOKEN:-}"
+[ -n "$HF_TOKEN" ] && export HF_TOKEN
 
 # ── 2. Base Model (Default: merged SFT) ─────────────────────────────────────────
 FULL_SFT_MERGED="$SCRIPT_DIR/output/sft_merged"
@@ -130,13 +202,7 @@ GRPO_OUT="$OUTPUT_ROOT/grpo_lora"
 GRPO_LOG_DIR="$OUTPUT_ROOT/logs/grpo"
 log "=== Launching GRPO Training ==="
 
-# Auto-fallback to SDPA when flash_attn isn't installed (mirrors train_sft.sh)
-if ! "$VENV_PYTHON" -c "import flash_attn" 2>/dev/null; then
-    if [ "${DISABLE_FLASH_ATTN2:-0}" != "1" ]; then
-        warn "flash_attn not importable — forcing SDPA (DISABLE_FLASH_ATTN2=1)."
-        DISABLE_FLASH_ATTN2=1
-    fi
-fi
+# (flash_attn presence already handled in §1: installed or SDPA forced)
 
 mkdir -p "$GRPO_LOG_DIR"
 {
