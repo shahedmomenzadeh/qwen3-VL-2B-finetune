@@ -145,6 +145,10 @@ NUM_GENERATIONS="${NUM_GENERATIONS:-4}"
 GRPO_MICRO_PROMPTS="${GRPO_MICRO_PROMPTS:-1}"
 MAX_COMP="${MAX_COMP:-256}"
 NUM_EPOCHS="${NUM_EPOCHS:-1}"
+SAVE_STEPS="${SAVE_STEPS:-20}"
+SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-5}"
+EVAL_STRATEGY="${EVAL_STRATEGY:-steps}"
+EVAL_STEPS="${EVAL_STEPS:-300}"
 
 NFRAMES="${NFRAMES:-60}"
 FPS="${FPS:-}"
@@ -165,6 +169,7 @@ REPORT_TO="${REPORT_TO:-tensorboard}"
 
 log "MODEL_ID=$MODEL_ID"
 log "BITS=$BITS RANK=$LORA_RANK BATCH=${BATCH_PER_DEVICE}x${GRAD_ACCUM} NG=$NUM_GENERATIONS MICRO=$GRPO_MICRO_PROMPTS MAX_COMP=$MAX_COMP EPOCHS=$NUM_EPOCHS"
+log "SAVE_STEPS=$SAVE_STEPS (keep $SAVE_TOTAL_LIMIT) EVAL_STRATEGY=$EVAL_STRATEGY ($EVAL_STEPS)"
 log "WORKERS=$DATALOADER_WORKERS PREFETCH=$DATALOADER_PREFETCH PERSISTENT=$DATALOADER_PERSISTENT"
 log "NFRAMES=$NFRAMES VIDEO_MIN=$VIDEO_MIN_PIXELS VIDEO_MAX=$VIDEO_MAX_PIXELS"
 log "OUTPUT=$OUTPUT_ROOT/grpo_lora -> $OUTPUT_ROOT/grpo_merged"
@@ -262,12 +267,12 @@ bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$GRPO_LOG_DIR" "grpo" \
     --dataloader_prefetch_factor "$DATALOADER_PREFETCH" \
     --dataloader_persistent_workers "$DATALOADER_PERSISTENT" \
     --logging_steps 1 \
-    --eval_strategy steps \
-    --eval_steps 300 \
+    --eval_strategy "$EVAL_STRATEGY" \
+    --eval_steps "$EVAL_STEPS" \
     --per_device_eval_batch_size 1 \
     --save_strategy steps \
-    --save_steps 300 \
-    --save_total_limit 3 \
+    --save_steps "$SAVE_STEPS" \
+    --save_total_limit "$SAVE_TOTAL_LIMIT" \
     --report_to "$REPORT_TO" \
     || err "GRPO failed — see $GRPO_LOG_DIR/train.log + summary.txt"
 
