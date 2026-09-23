@@ -6,7 +6,7 @@ Features:
 - Splits archives split-wise (e.g., train_01.zip, train_02.zip, test_01.zip, validation_01.zip, etc.).
 - Produces completely independent, standalone, standard ZIP files.
 - Restores original subfolder structures and preserves relative directory hierarchies.
-- Standalone top-level files (e.g., README.md, grpo_procedure_split_map.json) are packed into root_files.zip.
+- Standalone top-level files (e.g., README.md, procedure_split_map.json, grpo_procedure_split_map.json) are packed into root_files.zip.
 - Configurable chunk size (default: 2.0 GB).
 - Shows live file and bytes progress.
 """
@@ -29,7 +29,7 @@ def chunk_files_for_split(split_name: str, src_dir: str, target_size_bytes: int)
     """
     split_path = os.path.join(src_dir, split_name)
     items = []
-    
+
     if os.path.isdir(split_path):
         for root, dirs, files in os.walk(split_path):
             rel_root = os.path.relpath(root, src_dir)
@@ -121,13 +121,13 @@ def split_and_zip(src_dir: str, output_dir: str, chunk_size_gb: float = 2.0, com
         for idx, chunk_items in enumerate(chunks, start=1):
             zip_filename = f"{prefix}_{idx:02d}.zip"
             zip_filepath = os.path.join(output_dir, zip_filename)
-            
+
             total_raw_bytes = sum(sz for _, sz in chunk_items)
             num_files = len(chunk_items)
-            
+
             print(f" -> {zip_filename}: {num_files} files, ~{total_raw_bytes / (1024**3):.2f} GB raw data...")
             create_zip_chunk(zip_filepath, chunk_items, src_dir, compresslevel=compresslevel)
-            
+
             actual_size = os.path.getsize(zip_filepath)
             created_zips.append((zip_filename, actual_size, num_files))
             print(f"    Done: {zip_filename} (Compressed Size: {actual_size / (1024**2):.1f} MB)")

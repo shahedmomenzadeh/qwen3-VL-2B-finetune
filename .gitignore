@@ -24,7 +24,14 @@ dataset_sft/*
 !dataset_sft/*.py
 !dataset_sft/*.sh
 !dataset_sft/*.json
-dataset_grpo
+!dataset_sft/*.md
+dataset_sft/dataset_zips/
+dataset_grpo/*
+!dataset_grpo/*.py
+!dataset_grpo/*.sh
+!dataset_grpo/*.json
+!dataset_grpo/*.md
+dataset_grpo/dataset_zips/
 
 
 # IDE

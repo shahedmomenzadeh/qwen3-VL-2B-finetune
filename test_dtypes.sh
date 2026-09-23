@@ -66,8 +66,9 @@ export HF_HOME
 export PYTHONPATH="src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 
-# Auto-restore SFT data from HF Hub on a fresh machine (no-op when present)
+# Auto-restore SFT & GRPO data from HF Hub on a fresh machine (no-op when present)
 SFT_DATASET_ROOT="$SFT_DATASET_ROOT" VENV_PYTHON="${VENV_PYTHON:-.venv/bin/python}" bash "$SCRIPT_DIR/scripts/ensure_dataset_sft.sh"
+GRPO_DATASET_ROOT="$GRPO_DATASET_ROOT" VENV_PYTHON="${VENV_PYTHON:-.venv/bin/python}" bash "$SCRIPT_DIR/scripts/ensure_dataset_grpo.sh"
 
 if [ -f "$HF_HOME/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203/config.json" ]; then
     export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
