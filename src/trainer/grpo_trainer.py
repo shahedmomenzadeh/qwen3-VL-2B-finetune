@@ -330,6 +330,24 @@ class QwenGRPOTrainer(Trainer):
             if hasattr(self.model, "base_model") and hasattr(self.model.base_model, "config"):
                 self.model.base_model.config.to_json_file(os.path.join(output_dir, "config.json"))
 
+    def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
+        """Restore non-LoRA trainable weights (e.g. visual merger) alongside LoRA adapters."""
+        super()._load_from_checkpoint(resume_from_checkpoint, model=model)
+        non_lora_path = os.path.join(resume_from_checkpoint, "non_lora_state_dict.bin")
+        if os.path.exists(non_lora_path):
+            logger.info(f"Loading non-LoRA state dict from {non_lora_path}...")
+            non_lora_trainables = torch.load(non_lora_path, map_location="cpu", weights_only=True)
+            target_model = model if model is not None else self.model
+            # Try raw keys first (standard in PeftModel)
+            load_result = target_model.load_state_dict(non_lora_trainables, strict=False)
+            if not load_result.unexpected_keys:
+                logger.info(f"Non-LoRA state dict loaded successfully: {len(non_lora_trainables)} parameters restored.")
+            else:
+                # Fallback: strip 'base_model.' prefix if model unwrapped
+                stripped = {(k[11:] if k.startswith("base_model.") else k): v for k, v in non_lora_trainables.items()}
+                load_result2 = target_model.load_state_dict(stripped, strict=False)
+                logger.info(f"Non-LoRA state dict loaded (unwrapped keys): {load_result2}")
+
     def training_step(self, model, inputs, num_items_in_batch=None):
         """Prompt micro-batching: `grpo_micro_prompts` prompts per compute_loss call.
 

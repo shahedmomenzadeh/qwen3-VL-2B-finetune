@@ -100,6 +100,8 @@ export PYTHONPATH="src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 # Single-threaded OpenMP per dataloader worker (avoid oversubscription).
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export APPEND_LOGS="${APPEND_LOGS:-1}"
 HF_TOKEN="${HF_TOKEN:-}"
 [ -n "$HF_TOKEN" ] && export HF_TOKEN
 
@@ -219,6 +221,12 @@ mkdir -p "$GRPO_LOG_DIR"
     echo "nframes=$NFRAMES fps=${FPS:-unset} px_min=$VIDEO_MIN_PIXELS px_max=$VIDEO_MAX_PIXELS"
     echo "disable_flash_attn2=$DISABLE_FLASH_ATTN2 report_to=$REPORT_TO"
 } > "$GRPO_LOG_DIR/config.txt" 2>&1 || true
+
+EXISTING_TB_RUN=$(ls -td "$GRPO_OUT"/runs/* 2>/dev/null | head -n1 || true)
+if [ -n "$EXISTING_TB_RUN" ] && [ -d "$EXISTING_TB_RUN" ]; then
+    export TENSORBOARD_LOGGING_DIR="$EXISTING_TB_RUN"
+    log "Preserving existing TensorBoard run: $TENSORBOARD_LOGGING_DIR"
+fi
 
 bash "$SCRIPT_DIR/scripts/run_instrumented.sh" "$GRPO_LOG_DIR" "grpo" \
     $VENV_PYTHON -u src/train/train_grpo.py \

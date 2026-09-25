@@ -36,19 +36,36 @@ shift 2
 mkdir -p "$RUN_DIR"
 TRAIN_LOG="$RUN_DIR/train.log"
 GPU_LOG="$RUN_DIR/gpu.csv"
-rm -f "$TRAIN_LOG" "$GPU_LOG" "$RUN_DIR/start_time" "$RUN_DIR/end_time" \
-      "$RUN_DIR/exit_code" "$RUN_DIR/cmd.txt" "$RUN_DIR/losses.csv" \
-      "$RUN_DIR/eval_losses.csv" "$RUN_DIR/summary.txt"
+
+if [ "${APPEND_LOGS:-0}" = "1" ]; then
+    rm -f "$RUN_DIR/end_time" "$RUN_DIR/exit_code"
+    printf '\n[=== RESUMING TRAINING AT %s ===]\n' "$(date -u)" >> "$TRAIN_LOG"
+else
+    rm -f "$TRAIN_LOG" "$GPU_LOG" "$RUN_DIR/start_time" "$RUN_DIR/end_time" \
+          "$RUN_DIR/exit_code" "$RUN_DIR/cmd.txt" "$RUN_DIR/losses.csv" \
+          "$RUN_DIR/eval_losses.csv" "$RUN_DIR/summary.txt"
+fi
+
 printf '%q ' "$@" > "$RUN_DIR/cmd.txt"; printf '\n' >> "$RUN_DIR/cmd.txt"
 
-printf '%s\n' "$(date +%s.%N)" > "$RUN_DIR/start_time"
+if [ "${APPEND_LOGS:-0}" != "1" ] || [ ! -f "$RUN_DIR/start_time" ]; then
+    printf '%s\n' "$(date +%s.%N)" > "$RUN_DIR/start_time"
+fi
 
 # Training in background, direct redirect (exit code is exactly the command's).
-"$@" > "$TRAIN_LOG" 2>&1 &
+if [ "${APPEND_LOGS:-0}" = "1" ]; then
+    "$@" >> "$TRAIN_LOG" 2>&1 &
+else
+    "$@" > "$TRAIN_LOG" 2>&1 &
+fi
 TRAIN_PID=$!
 
 # Stream the log to console; GNU tail --pid exits on its own when training ends.
-tail --pid="$TRAIN_PID" -F -n +1 "$TRAIN_LOG" 2>/dev/null &
+if [ "${APPEND_LOGS:-0}" = "1" ]; then
+    tail --pid="$TRAIN_PID" -F -n 50 "$TRAIN_LOG" 2>/dev/null &
+else
+    tail --pid="$TRAIN_PID" -F -n +1 "$TRAIN_LOG" 2>/dev/null &
+fi
 TAIL_PID=$!
 
 # GPU telemetry (best effort: skipped cleanly when nvidia-smi is absent).
@@ -56,7 +73,9 @@ POLL="${GPU_POLL_SEC:-5}"
 MON_PID=""
 if command -v nvidia-smi &>/dev/null; then
     (
-        printf 'timestamp,gpu_index,gpu_util_percent,memory_used_mib,memory_total_mib,temperature_c,power_w\n' > "$GPU_LOG"
+        if [ "${APPEND_LOGS:-0}" != "1" ] || [ ! -f "$GPU_LOG" ]; then
+            printf 'timestamp,gpu_index,gpu_util_percent,memory_used_mib,memory_total_mib,temperature_c,power_w\n' > "$GPU_LOG"
+        fi
         while kill -0 "$TRAIN_PID" 2>/dev/null; do
             ts="$(date +%s.%N)"
             nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw \
